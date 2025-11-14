@@ -2,9 +2,12 @@ require("dotenv").config();
 const express = require("express");
 const axios = require("axios");
 const { Pool } = require("pg"); // Importa o 'Pool' do 'pg'
+const cors = require("cors"); // <-- 1. ADICIONE ESTA LINHA
 
 const app = express();
 const port = process.env.PORT || 3000;
+
+app.use(cors()); // <-- 2. ADICIONE ESTA LINHA (permite todas as origens)
 
 // --- CONFIGURAÇÃO DO BANCO DE DADOS ---
 const connectionString = process.env.DATABASE_URL;
