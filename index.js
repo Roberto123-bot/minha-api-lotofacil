@@ -3,11 +3,14 @@ const express = require("express");
 const axios = require("axios");
 const { Pool } = require("pg");
 const cors = require("cors");
+const bcrypt = require("bcryptjs"); // Para senhas
+const jwt = require("jsonwebtoken"); // Para o token
 
 const app = express();
 const port = process.env.PORT || 3000;
 
 app.use(cors());
+app.use(express.json());
 
 // --- CONFIGURAÇÃO DO BANCO DE DADOS ---
 const connectionString = process.env.DATABASE_URL;
@@ -15,13 +18,156 @@ if (!connectionString) {
   console.error("ERRO: DATABASE_URL não encontrada.");
   process.exit(1);
 }
+
+// NOVO: Verificar o segredo do JWT
+const jwtSecret = process.env.JWT_SECRET;
+if (!jwtSecret) {
+  console.error("ERRO: JWT_SECRET não encontrado no .env");
+  process.exit(1);
+}
+
 const pool = new Pool({
   connectionString: connectionString,
 });
 
-// --- LÓGICA DE NEGÓCIO ---
+// ===================================
+// === NOVAS ROTAS DE AUTENTICAÇÃO ===
+// ===================================
 
-// Busca o último concurso salvo no banco
+// ROTA DE REGISTRO
+app.post("/api/register", async (req, res) => {
+  try {
+    const { nome, email, senha } = req.body;
+
+    // 1. Validar inputs (básico)
+    if (!nome || !email || !senha) {
+      return res
+        .status(400)
+        .json({ error: "Nome, email e senha são obrigatórios." });
+    }
+
+    // 2. Verificar se o usuário já existe
+    const userExists = await pool.query(
+      "SELECT * FROM usuarios WHERE email = $1",
+      [email]
+    );
+    if (userExists.rows.length > 0) {
+      return res.status(400).json({ error: "Este email já está cadastrado." });
+    }
+
+    // 3. Criptografar a senha (Hash)
+    const salt = await bcrypt.genSalt(10); // "Tempero" para o hash
+    const senha_hash = await bcrypt.hash(senha, salt);
+
+    // 4. Salvar no banco
+    const newUser = await pool.query(
+      "INSERT INTO usuarios (nome, email, senha_hash) VALUES ($1, $2, $3) RETURNING id, email, nome",
+      [nome, email, senha_hash]
+    );
+
+    // 5. Responder com sucesso
+    res.status(201).json({
+      id: newUser.rows[0].id,
+      email: newUser.rows[0].email,
+      nome: newUser.rows[0].nome,
+    });
+  } catch (error) {
+    console.error("Erro no registro:", error.message);
+    res.status(500).json({ error: "Erro interno do servidor." });
+  }
+});
+
+// ROTA DE LOGIN
+app.post("/api/login", async (req, res) => {
+  try {
+    const { email, senha } = req.body;
+
+    // 1. Validar inputs
+    if (!email || !senha) {
+      return res.status(400).json({ error: "Email e senha são obrigatórios." });
+    }
+
+    // 2. Buscar o usuário no banco
+    const userResult = await pool.query(
+      "SELECT * FROM usuarios WHERE email = $1",
+      [email]
+    );
+
+    // 3. Se o usuário NÃO for encontrado
+    if (userResult.rows.length === 0) {
+      return res.status(401).json({ error: "Email ou senha inválidos." }); // Mensagem genérica por segurança
+    }
+    const user = userResult.rows[0];
+
+    // 4. Comparar a senha enviada com a senha "hash" do banco
+    const senhaCorreta = await bcrypt.compare(senha, user.senha_hash);
+    if (!senhaCorreta) {
+      return res.status(401).json({ error: "Email ou senha inválidos." });
+    }
+
+    // 5. Gerar o Token (O "crachá" de login)
+    const token = jwt.sign(
+      { id: user.id, email: user.email, nome: user.nome }, // O que vai dentro do crachá
+      jwtSecret, // A chave secreta para assinar
+      { expiresIn: "8h" } // Validade do crachá
+    );
+
+    // 6. Enviar o token para o front-end
+    res.status(200).json({
+      token: token,
+      usuario: {
+        id: user.id,
+        email: user.email,
+        nome: user.nome,
+      },
+    });
+  } catch (error) {
+    console.error("Erro no login:", error.message);
+    res.status(500).json({ error: "Erro interno do servidor." });
+  }
+});
+
+// ===================================
+// === NOVO: MIDDLEWARE DE AUTENTICAÇÃO ===
+// ===================================
+// (Este é o "Segurança" da porta)
+function authMiddleware(req, res, next) {
+  // 1. Pega o cabeçalho 'authorization'
+  const authHeader = req.headers["authorization"];
+
+  // 2. O token vem no formato "Bearer [tokenstring]"
+  //    Então, pegamos o token [1] (a segunda parte)
+  const token = authHeader && authHeader.split(" ")[1];
+
+  // 3. Se não veio token, barra a entrada
+  if (token == null) {
+    return res
+      .status(401)
+      .json({ error: "Acesso não autorizado. Token não fornecido." });
+  }
+
+  // 4. Verifica se o "crachá" (token) é válido
+  jwt.verify(token, jwtSecret, (err, usuario) => {
+    // 5. Se o crachá for inválido ou expirado
+    if (err) {
+      return res
+        .status(403)
+        .json({ error: "Acesso proibido. Token inválido." });
+    }
+
+    // 6. Se for válido, anexa os dados do usuário na requisição
+    //    e deixa ele passar (next)
+    req.usuario = usuario;
+    next();
+  });
+}
+
+// ===================================
+// === SUAS ROTAS ANTIGAS (LOTOFÁCIL) ===
+// ===================================
+
+// --- LÓGICA DE NEGÓCIO ---
+// (Suas funções getUltimoSalvo, normalizarConcurso, etc. continuam aqui)
 async function getUltimoSalvo() {
   try {
     const result = await pool.query(
@@ -121,8 +267,14 @@ async function syncLotofacil() {
 
 // --- ENDPOINTS DA API ---
 
-// Endpoint do Frontend
-app.get("/api/resultados", async (req, res) => {
+// Endpoint do Frontend (AGORA PROTEGIDO!)
+// Note a adição do "authMiddleware" antes do (req, res)
+app.get("/api/resultados", authMiddleware, async (req, res) => {
+  // Graças ao middleware, agora sabemos QUEM está pedindo
+  console.log(
+    `Usuário ${req.usuario.email} (ID: ${req.usuario.id}) está buscando resultados.`
+  );
+
   const limit = parseInt(req.query.limit) || 10;
   try {
     const query = `
@@ -139,7 +291,7 @@ app.get("/api/resultados", async (req, res) => {
   }
 });
 
-// Endpoint do Worker
+// Endpoint do Worker (Provavelmente não precisa de proteção se for chamado internamente)
 app.all("/api/worker/run", async (req, res) => {
   console.log("Worker /api/worker/run chamado...");
   try {
