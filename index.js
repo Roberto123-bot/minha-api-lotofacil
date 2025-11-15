@@ -94,7 +94,7 @@ app.get("/api/resultados", async (req, res) => {
 });
 
 // 2. Endpoint para o Worker (Cron Job)
-app.post("/api/worker/run", async (req, res) => {
+app.all("/api/worker/run", async (req, res) => {
   console.log("Worker /api/worker/run chamado...");
   const dados = await buscarResultadoOficial();
   let message = "Falha ao obter dados da API.";
