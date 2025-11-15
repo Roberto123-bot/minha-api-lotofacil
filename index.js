@@ -33,7 +33,7 @@ async function buscarResultadoOficial() {
       data: apiData.dataApuracao,
       dezenas: apiData.listaDezenas.join(" "),
     };
-    console.log(`Resultado obtido (Concurso ${dadosObtidos.concurso})!`);
+    console.log(`Resultado obtido OK (Concurso ${dadosObtidos.concurso})!`);
     return dadosObtidos;
   } catch (error) {
     console.error("Erro ao buscar dados da API oficial:", error.message);
