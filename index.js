@@ -1,37 +1,37 @@
 require("dotenv").config();
 const express = require("express");
 const axios = require("axios");
-const { Pool } = require("pg"); // Importa o 'Pool' do 'pg'
-const cors = require("cors"); // <-- 1. ADICIONE ESTA LINHA
+const { Pool } = require("pg");
+const cors = require("cors");
 
 const app = express();
 const port = process.env.PORT || 3000;
 
-app.use(cors()); // <-- 2. ADICIONE ESTA LINHA (permite todas as origens)
+app.use(cors());
 
 // --- CONFIGURAÇÃO DO BANCO DE DADOS ---
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) {
-  console.error("ERRO: DATABASE_URL não encontrada. Verifique seu .env");
+  console.error("ERRO: DATABASE_URL não encontrada.");
   process.exit(1);
 }
-
 const pool = new Pool({
   connectionString: connectionString,
 });
 
-// --- LÓGICA DE NEGÓCIO (Reutilizada) ---
+// --- LÓGICA DE NEGÓCIO ---
+
+// URL base da API
 const API_LOTOFACIL_BASE_URL =
   "https://api.guidi.dev.br/loteria/lotofacil/ultimo";
 
-// NOVA FUNÇÃO: Busca um concurso específico (ou 'ultimo')
+// Busca um concurso ESPECÍFICO (por número)
 async function buscarConcursoEspecifico(numero) {
   console.log(`Buscando concurso: ${numero}...`);
   try {
     const response = await axios.get(`${API_LOTOFACIL_BASE_URL}/${numero}`);
     const apiData = response.data;
 
-    // Verifica se a API retornou dados válidos
     if (!apiData || !apiData.numero) {
       throw new Error("API retornou dados inválidos.");
     }
@@ -43,12 +43,17 @@ async function buscarConcursoEspecifico(numero) {
     };
     return dadosObtidos;
   } catch (error) {
+    // Se der 404 (Não encontrado), a API está nos dizendo que o concurso não existe.
+    if (error.response && error.response.status === 404) {
+      console.log(`Concurso ${numero} não encontrado (404).`);
+      return null; // Isso é o que esperamos quando chegarmos ao fim.
+    }
     console.error(`Erro ao buscar concurso ${numero}:`, error.message);
-    return null;
+    return null; // Trata outros erros
   }
 }
 
-// NOVA FUNÇÃO: Pega o último concurso salvo no NOSSO banco
+// Pega o último concurso salvo no NOSSO banco
 async function getMyLatestConcurso() {
   try {
     const { rows } = await pool.query(
@@ -65,29 +70,20 @@ async function getMyLatestConcurso() {
   }
 }
 
-// FUNÇÃO DE SALVAR (Otimizada)
+// Salva o resultado no nosso banco
 async function salvarResultado(dados) {
   const { concurso, data, dezenas } = dados;
-
   const [dia, mes, ano] = data.split("/");
-  // Ajuste para o Neon entender a data
   const dataFormatada = `${ano}-${mes}-${dia}`;
 
-  // Query SQL para inserir ou não fazer nada se o concurso já existir
   const query = `
         INSERT INTO resultados (concurso, data, dezenas)
         VALUES ($1, $2, $3)
         ON CONFLICT (concurso) DO NOTHING
-        RETURNING *;
     `;
-
   try {
-    const res = await pool.query(query, [concurso, dataFormatada, dezenas]);
-    if (res.rowCount > 0) {
-      return `Sucesso! Concurso ${concurso} salvo.`;
-    } else {
-      return `Concurso ${concurso} já existia. Pulando.`;
-    }
+    await pool.query(query, [concurso, dataFormatada, dezenas]);
+    return `Sucesso! Concurso ${concurso} salvo.`;
   } catch (error) {
     return `Erro ao salvar concurso ${concurso}: ${error.message}`;
   }
@@ -95,12 +91,10 @@ async function salvarResultado(dados) {
 
 // --- ENDPOINTS DA API ---
 
-// 1. Endpoint para o Frontend (Vercel)
+// Endpoint do Frontend (continua igual)
 app.get("/api/resultados", async (req, res) => {
   const limit = parseInt(req.query.limit) || 10;
-  // ... (código existente, não muda)
   try {
-    // Query SQL para buscar os últimos resultados
     const query = `
             SELECT concurso, data, dezenas 
             FROM resultados
@@ -115,70 +109,50 @@ app.get("/api/resultados", async (req, res) => {
   }
 });
 
-// Endpoint do Worker (AGORA COM LÓGICA DE BACKFILL)
+// Endpoint do Worker (LÓGICA DE PREENCHIMENTO CONTÍNUO)
 app.all("/api/worker/run", async (req, res) => {
   console.log("Worker /api/worker/run chamado...");
 
-  // 1. Pega o último resultado da API
-  const ultimoConcursoOficial = await buscarConcursoEspecifico("ultimo");
-  if (!ultimoConcursoOficial) {
-    return res
-      .status(500)
-      .json({ message: "Falha ao buscar último concurso da API." });
-  }
-
-  const apiLatestNum = ultimoConcursoOficial.concurso; // ex: 3539
-
-  // 2. Pega o nosso último resultado
-  const myLatestNum = await getMyLatestConcurso(); // ex: 3537
-
-  // 3. Verifica se há concursos faltando
-  if (myLatestNum >= apiLatestNum) {
-    const message = "Banco de dados já está atualizado.";
-    console.log(message);
-    return res.status(200).json({ message: message });
-  }
-
-  // 4. Se houver, preenche a lacuna (o backfill)
-  // ex: Loop de (3537 + 1) até 3539
+  let meuUltimoConcurso = await getMyLatestConcurso(); // ex: 3537
   const logs = [];
-  console.log(
-    `Iniciando backfill do concurso ${myLatestNum + 1} até ${apiLatestNum}...`
-  );
 
-  for (let i = myLatestNum + 1; i <= apiLatestNum; i++) {
-    let dadosDoConcurso;
-    if (i === apiLatestNum) {
-      // Otimização: Já temos os dados do último, não precisa buscar de novo
-      dadosDoConcurso = ultimoConcursoOficial;
-    } else {
-      // Busca os concursos faltando (ex: 3538)
-      dadosDoConcurso = await buscarConcursoEspecifico(i);
+  // Loop infinito seguro (máximo de 10 concursos por vez para evitar loops)
+  for (let i = 0; i < 10; i++) {
+    let proximoConcursoNum = meuUltimoConcurso + 1; // ex: 3538
+
+    const dadosDoConcurso = await buscarConcursoEspecifico(proximoConcursoNum);
+
+    // Se a API retornar 'null' (404), significa que estamos atualizados.
+    if (!dadosDoConcurso) {
+      const message = `Banco de dados está atualizado. (Verificou ${proximoConcursoNum} e não foi encontrado).`;
+      console.log(message);
+      logs.push(message);
+      break; // Sai do loop
     }
 
-    if (dadosDoConcurso) {
-      const logMessage = await salvarResultado(dadosDoConcurso);
-      console.log(logMessage);
-      logs.push(logMessage);
-    } else {
-      const logMessage = `Falha ao processar concurso ${i}.`;
-      console.log(logMessage);
-      logs.push(logMessage);
-    }
+    // Se o concurso foi encontrado, salvamos
+    const logMessage = await salvarResultado(dadosDoConcurso);
+    console.log(logMessage);
+    logs.push(logMessage);
+
+    // Atualiza nosso número de controle para o próximo loop
+    meuUltimoConcurso = proximoConcursoNum;
   }
 
-  console.log("Backfill completo.");
-  res
-    .status(200)
-    .json({ message: "Worker executado com sucesso.", logs: logs });
+  if (logs.length === 0) {
+    logs.push("Nenhuma ação necessária.");
+  }
+
+  console.log("Worker finalizado.");
+  res.status(200).json({ message: "Worker executado.", logs: logs });
 });
 
-// Rota Raiz
+// Rota Raiz (continua igual)
 app.get("/", (req, res) => {
   res.send("API da Lotofácil (PostgreSQL + Express) está no ar.");
 });
 
-// Inicia o servidor
+// Inicia o servidor (continua igual)
 app.listen(port, () => {
   console.log(`API da Lotofácil rodando na porta ${port}`);
 });
