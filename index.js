@@ -132,42 +132,30 @@ app.post("/api/login", async (req, res) => {
 // ===================================
 // (Este é o "Segurança" da porta)
 function authMiddleware(req, res, next) {
-  // 1. Pega o cabeçalho 'authorization'
   const authHeader = req.headers["authorization"];
-
-  // 2. O token vem no formato "Bearer [tokenstring]"
-  //    Então, pegamos o token [1] (a segunda parte)
   const token = authHeader && authHeader.split(" ")[1];
-
-  // 3. Se não veio token, barra a entrada
   if (token == null) {
     return res
       .status(401)
       .json({ error: "Acesso não autorizado. Token não fornecido." });
   }
-
-  // 4. Verifica se o "crachá" (token) é válido
   jwt.verify(token, jwtSecret, (err, usuario) => {
-    // 5. Se o crachá for inválido ou expirado
     if (err) {
       return res
         .status(403)
         .json({ error: "Acesso proibido. Token inválido." });
     }
-
-    // 6. Se for válido, anexa os dados do usuário na requisição
-    //    e deixa ele passar (next)
     req.usuario = usuario;
     next();
   });
 }
 
 // ===================================
-// === SUAS ROTAS ANTIGAS (LOTOFÁCIL) ===
+// === ROTAS DA LOTOFÁCIL (Resultados) ===
 // ===================================
+// (Suas funções e rotas de resultados continuam aqui... igual)
 
-// --- LÓGICA DE NEGÓCIO ---
-// (Suas funções getUltimoSalvo, normalizarConcurso, etc. continuam aqui)
+// ... (getUltimoSalvo, normalizarConcurso, salvarConcurso, syncLotofacil) ...
 async function getUltimoSalvo() {
   try {
     const result = await pool.query(
@@ -183,11 +171,9 @@ async function getUltimoSalvo() {
   }
 }
 
-// Normaliza os dados do concurso para o formato do banco
 function normalizarConcurso(data) {
   const [dia, mes, ano] = data.dataApuracao.split("/");
   const dataFormatada = `${ano}-${mes}-${dia}`;
-
   return {
     concurso: data.numero,
     data: dataFormatada,
@@ -215,18 +201,13 @@ async function salvarConcurso(doc) {
 // Função principal de sincronização
 async function syncLotofacil() {
   try {
-    // 1 - Descobrir último concurso salvo
     const ultimoSalvo = await getUltimoSalvo();
     console.log("Último salvo no banco:", ultimoSalvo);
-
-    // 2 - Buscar último concurso na API
     const { data: ultimaApi } = await axios.get(
       "https://api.guidi.dev.br/loteria/lotofacil/ultimo"
     );
     const ultimoApiNumero = Number(ultimaApi.numero);
     console.log("Último disponível na API:", ultimoApiNumero);
-
-    // 3 - Se já está atualizado, encerrar
     if (ultimoSalvo >= ultimoApiNumero) {
       console.log("Banco já está atualizado ✅");
       return {
@@ -235,8 +216,6 @@ async function syncLotofacil() {
         ultimoConcurso: ultimoSalvo,
       };
     }
-
-    // 4 - Buscar concursos faltantes
     let concursosAdicionados = 0;
     for (let i = ultimoSalvo + 1; i <= ultimoApiNumero; i++) {
       try {
@@ -265,16 +244,11 @@ async function syncLotofacil() {
   }
 }
 
-// --- ENDPOINTS DA API ---
-
 // Endpoint do Frontend (AGORA PROTEGIDO!)
-// Note a adição do "authMiddleware" antes do (req, res)
 app.get("/api/resultados", authMiddleware, async (req, res) => {
-  // Graças ao middleware, agora sabemos QUEM está pedindo
   console.log(
     `Usuário ${req.usuario.email} (ID: ${req.usuario.id}) está buscando resultados.`
   );
-
   const limit = parseInt(req.query.limit) || 10;
   try {
     const query = `
@@ -291,7 +265,60 @@ app.get("/api/resultados", authMiddleware, async (req, res) => {
   }
 });
 
-// Endpoint do Worker (Provavelmente não precisa de proteção se for chamado internamente)
+// ===================================
+// === NOVAS ROTAS DE JOGOS SALVOS ===
+// ===================================
+
+// ROTA PARA SALVAR UM NOVO JOGO
+// (authMiddleware garante que só usuários logados podem salvar)
+app.post("/api/jogos/salvar", authMiddleware, async (req, res) => {
+  const { dezenas } = req.body; // Pega as dezenas do front-end
+  const usuario_id = req.usuario.id; // Pega o ID do usuário (do token)
+
+  // Validação simples
+  if (!dezenas || typeof dezenas !== "string") {
+    return res.status(400).json({ error: "Formato de dezenas inválido." });
+  }
+
+  try {
+    const query = `
+      INSERT INTO jogos_salvos (dezenas, usuario_id)
+      VALUES ($1, $2)
+      RETURNING *; 
+    `;
+    const { rows } = await pool.query(query, [dezenas, usuario_id]);
+    res.status(201).json(rows[0]); // Retorna o jogo que foi salvo
+  } catch (error) {
+    console.error("Erro ao salvar jogo:", error.message);
+    res.status(500).json({ error: "Erro interno ao salvar o jogo." });
+  }
+});
+
+// ROTA PARA BUSCAR OS JOGOS DO USUÁRIO
+// (authMiddleware garante que o usuário só veja os jogos dele)
+app.get("/api/jogos/meus-jogos", authMiddleware, async (req, res) => {
+  const usuario_id = req.usuario.id; // Pega o ID do usuário (do token)
+
+  try {
+    const query = `
+      SELECT id, dezenas, data_criacao 
+      FROM jogos_salvos
+      WHERE usuario_id = $1
+      ORDER BY data_criacao DESC; -- (Opcional: mostra os mais novos primeiro)
+    `;
+    const { rows } = await pool.query(query, [usuario_id]);
+    res.status(200).json(rows); // Retorna a lista de jogos salvos
+  } catch (error) {
+    console.error("Erro ao buscar jogos:", error.message);
+    res.status(500).json({ error: "Erro interno ao buscar seus jogos." });
+  }
+});
+
+// ===================================
+// === ROTAS FINAIS ===
+// ===================================
+
+// Endpoint do Worker
 app.all("/api/worker/run", async (req, res) => {
   console.log("Worker /api/worker/run chamado...");
   try {
