@@ -19,67 +19,118 @@ const pool = new Pool({
   connectionString: connectionString,
 });
 
-// --- LÓGICA DE NEGÓCIO (Baseada no seu script) ---
+// --- LÓGICA DE NEGÓCIO ---
 
-// URL da API OFICIAL DA CAIXA
-const API_CAIXA_URL =
-  "https://servicebus2.caixa.gov.br/portaldeloterias/api/lotofacil";
-
-// 🔹 Função para normalizar os dados (igual ao seu script)
-function normalizarConcurso(apiData) {
-  return {
-    concurso: apiData.numero,
-    data: apiData.dataApuracao,
-    // Mudança: o seu script antigo salvava um array, nosso banco salva uma string
-    dezenas: apiData.listaDezenas.join(" "),
-  };
-}
-
-// 🔹 Função para buscar o último salvo (agora no Postgres)
-async function getMyLatestConcurso() {
+// Busca o último concurso salvo no banco
+async function getUltimoSalvo() {
   try {
-    const { rows } = await pool.query(
+    const result = await pool.query(
       "SELECT concurso FROM resultados ORDER BY concurso DESC LIMIT 1"
     );
-    if (rows.length > 0) {
-      return rows[0].concurso; // ex: 3537
-    } else {
-      return 0;
+    if (result.rows.length > 0) {
+      return result.rows[0].concurso;
     }
+    return 0; // Banco vazio
   } catch (error) {
-    console.error("Erro ao buscar último concurso do DB:", error.message);
-    return 0; // Retorna 0 em caso de erro para tentar sincronizar do zero
+    console.error("Erro ao buscar último concurso:", error.message);
+    return 0;
   }
 }
 
-// 🔹 Função para salvar no Postgres
-async function salvarResultado(dados) {
-  const { concurso, data, dezenas } = dados;
-  const [dia, mes, ano] = data.split("/");
+// Normaliza os dados do concurso para o formato do banco
+function normalizarConcurso(data) {
+  const [dia, mes, ano] = data.dataApuracao.split("/");
   const dataFormatada = `${ano}-${mes}-${dia}`;
 
+  return {
+    concurso: data.numero,
+    data: dataFormatada,
+    dezenas: data.listaDezenas.join(" "),
+  };
+}
+
+// Salva resultado no banco
+async function salvarConcurso(doc) {
   const query = `
-        INSERT INTO resultados (concurso, data, dezenas)
-        VALUES ($1, $2, $3)
-        ON CONFLICT (concurso) DO NOTHING;
-    `;
-  // Usamos ON CONFLICT para ser seguro, mesmo que a lógica principal já evite duplicatas
-  await pool.query(query, [concurso, dataFormatada, dezenas]);
+    INSERT INTO resultados (concurso, data, dezenas)
+    VALUES ($1, $2, $3)
+    ON CONFLICT (concurso) DO NOTHING
+  `;
+  try {
+    await pool.query(query, [doc.concurso, doc.data, doc.dezenas]);
+    console.log(`✅ Concurso ${doc.concurso} salvo com sucesso!`);
+    return true;
+  } catch (error) {
+    console.error(`⚠️ Erro ao salvar concurso ${doc.concurso}:`, error.message);
+    return false;
+  }
+}
+
+// Função principal de sincronização
+async function syncLotofacil() {
+  try {
+    // 1 - Descobrir último concurso salvo
+    const ultimoSalvo = await getUltimoSalvo();
+    console.log("Último salvo no banco:", ultimoSalvo);
+
+    // 2 - Buscar último concurso na API
+    const { data: ultimaApi } = await axios.get(
+      "https://api.guidi.dev.br/loteria/lotofacil/ultimo"
+    );
+    const ultimoApiNumero = Number(ultimaApi.numero);
+    console.log("Último disponível na API:", ultimoApiNumero);
+
+    // 3 - Se já está atualizado, encerrar
+    if (ultimoSalvo >= ultimoApiNumero) {
+      console.log("Banco já está atualizado ✅");
+      return {
+        message: "Banco já está atualizado",
+        concursosAdicionados: 0,
+        ultimoConcurso: ultimoSalvo,
+      };
+    }
+
+    // 4 - Buscar concursos faltantes
+    let concursosAdicionados = 0;
+    for (let i = ultimoSalvo + 1; i <= ultimoApiNumero; i++) {
+      try {
+        const { data } = await axios.get(
+          `https://api.guidi.dev.br/loteria/lotofacil/${i}`
+        );
+        const doc = normalizarConcurso(data);
+        const salvou = await salvarConcurso(doc);
+        if (salvou) {
+          concursosAdicionados++;
+        }
+      } catch (err) {
+        console.error(`⚠️ Erro ao salvar concurso ${i}:`, err.message);
+      }
+    }
+
+    console.log("Sincronização concluída 🚀");
+    return {
+      message: "Sincronização concluída com sucesso",
+      concursosAdicionados: concursosAdicionados,
+      ultimoConcurso: ultimoApiNumero,
+    };
+  } catch (error) {
+    console.error("Erro na sincronização:", error.message);
+    throw error;
+  }
 }
 
 // --- ENDPOINTS DA API ---
 
-// Endpoint do Frontend (continua igual)
+// Endpoint do Frontend
 app.get("/api/resultados", async (req, res) => {
-  // ... (Este código não muda)
   const limit = parseInt(req.query.limit) || 10;
   try {
     const query = `
-            SELECT concurso, data, dezenas 
-            FROM resultados
-            ORDER BY concurso DESC
-            LIMIT $1;
-        `;
+      SELECT concurso, data, dezenas 
+      FROM resultados
+      ORDER BY concurso DESC
+      LIMIT $1;
+    `;
     const { rows } = await pool.query(query, [limit]);
     res.json(rows);
   } catch (error) {
@@ -88,78 +139,26 @@ app.get("/api/resultados", async (req, res) => {
   }
 });
 
-// Endpoint do Worker (AGORA USANDO A LÓGICA DO SEU SCRIPT ANTIGO)
+// Endpoint do Worker
 app.all("/api/worker/run", async (req, res) => {
   console.log("Worker /api/worker/run chamado...");
-  const logs = [];
-
   try {
-    // 1 - Descobrir último concurso salvo
-    const ultimoNumero = await getMyLatestConcurso();
-    console.log("Último salvo no banco:", ultimoNumero);
-    logs.push(`Último salvo no banco: ${ultimoNumero}`);
-
-    // 2 - Buscar último concurso na API da Caixa
-    const { data: ultimoApi } = await axios.get(API_CAIXA_URL); // Busca o último
-    const ultimoApiNumero = Number(ultimoApi.numero);
-    console.log("Último disponível na API:", ultimoApiNumero);
-    logs.push(`Último disponível na API: ${ultimoApiNumero}`);
-
-    // 3 - Se já está atualizado, encerrar
-    if (ultimoNumero >= ultimoApiNumero) {
-      console.log("Banco já está atualizado.");
-      logs.push("Banco já está atualizado.");
-      return res
-        .status(200)
-        .json({ message: "Banco já está atualizado.", logs });
-    }
-
-    // 4 - Buscar concursos faltantes
-    // (Loop do seu script, de ultimoNumero + 1 até ultimoApiNumero)
-    console.log(
-      `Iniciando backfill de ${ultimoNumero + 1} até ${ultimoApiNumero}`
-    );
-
-    for (let i = ultimoNumero + 1; i <= ultimoApiNumero; i++) {
-      try {
-        let doc;
-        if (i === ultimoApiNumero) {
-          // Otimização: já temos o último, não busca de novo
-          doc = normalizarConcurso(ultimoApi);
-        } else {
-          // Busca os concursos do meio
-          const { data } = await axios.get(`${API_CAIXA_URL}/${i}`);
-          doc = normalizarConcurso(data);
-        }
-
-        await salvarResultado(doc);
-        const logMsg = `✅ Concurso ${i} salvo com sucesso!`;
-        console.log(logMsg);
-        logs.push(logMsg);
-      } catch (err) {
-        // Se a API da Caixa falhar em um concurso do meio (raro), nós pulamos
-        const logMsg = `⚠️ Erro ao salvar concurso ${i}: ${err.message}`;
-        console.error(logMsg);
-        logs.push(logMsg);
-      }
-    }
-
-    console.log("Sincronização concluída.");
-    res.status(200).json({ message: "Sincronização concluída.", logs });
+    const resultado = await syncLotofacil();
+    res.status(200).json(resultado);
   } catch (error) {
-    console.error("Erro na sincronização:", error.message);
-    res
-      .status(500)
-      .json({ message: "Erro na sincronização", error: error.message });
+    res.status(500).json({
+      error: "Erro ao executar sincronização",
+      message: error.message,
+    });
   }
 });
 
-// Rota Raiz (continua igual)
+// Rota Raiz
 app.get("/", (req, res) => {
   res.send("API da Lotofácil (PostgreSQL + Express) está no ar.");
 });
 
-// Inicia o servidor (continua igual)
+// Inicia o servidor
 app.listen(port, () => {
   console.log(`API da Lotofácil rodando na porta ${port}`);
 });
