@@ -109,42 +109,63 @@ app.get("/api/resultados", async (req, res) => {
   }
 });
 
-// Endpoint do Worker (LÓGICA DE PREENCHIMENTO CONTÍNUO)
+// Endpoint do Worker (AGORA IGNORA ERROS NO MEIO)
 app.all("/api/worker/run", async (req, res) => {
   console.log("Worker /api/worker/run chamado...");
-
-  let meuUltimoConcurso = await getMyLatestConcurso(); // ex: 3537
   const logs = [];
 
-  // Loop infinito seguro (máximo de 10 concursos por vez para evitar loops)
-  for (let i = 0; i < 10; i++) {
-    let proximoConcursoNum = meuUltimoConcurso + 1; // ex: 3538
+  // 1. Pega o último resultado da API (para saber o nosso "alvo")
+  //    Usamos 'buscarConcursoEspecifico' com 'ultimo'
+  const ultimoConcursoOficial = await buscarConcursoEspecifico("ultimo");
+  if (!ultimoConcursoOficial) {
+    return res
+      .status(500)
+      .json({ message: "Falha ao buscar último concurso da API." });
+  }
+  const apiLatestNum = ultimoConcursoOficial.concurso; // ex: 3539
 
-    const dadosDoConcurso = await buscarConcursoEspecifico(proximoConcursoNum);
+  // 2. Pega o nosso último resultado
+  const myLatestNum = await getMyLatestConcurso(); // ex: 3537
 
-    // Se a API retornar 'null' (404), significa que estamos atualizados.
-    if (!dadosDoConcurso) {
-      const message = `Banco de dados está atualizado. (Verificou ${proximoConcursoNum} e não foi encontrado).`;
-      console.log(message);
-      logs.push(message);
-      break; // Sai do loop
+  // 3. Verifica se estamos atualizados
+  if (myLatestNum >= apiLatestNum) {
+    const message = "Banco de dados já está atualizado.";
+    console.log(message);
+    return res.status(200).json({ message: message });
+  }
+
+  // 4. Se houver, preenche a lacuna (o backfill)
+  // ex: Loop de 3538 (myLatestNum + 1) até 3539 (apiLatestNum)
+  console.log(
+    `Iniciando backfill do concurso ${myLatestNum + 1} até ${apiLatestNum}...`
+  );
+
+  for (let i = myLatestNum + 1; i <= apiLatestNum; i++) {
+    let dadosDoConcurso;
+
+    if (i === apiLatestNum) {
+      dadosDoConcurso = ultimoConcursoOficial; // Já temos, não busca de novo
+    } else {
+      dadosDoConcurso = await buscarConcursoEspecifico(i); // Busca o 3538
     }
 
-    // Se o concurso foi encontrado, salvamos
-    const logMessage = await salvarResultado(dadosDoConcurso);
-    console.log(logMessage);
-    logs.push(logMessage);
-
-    // Atualiza nosso número de controle para o próximo loop
-    meuUltimoConcurso = proximoConcursoNum;
+    if (dadosDoConcurso) {
+      // Se o concurso foi encontrado (ex: 3539), salvamos
+      const logMessage = await salvarResultado(dadosDoConcurso);
+      console.log(logMessage);
+      logs.push(logMessage);
+    } else {
+      // Se deu 404 (ex: 3538), nós registramos mas NÃO paramos o loop
+      const logMessage = `Falha ao processar concurso ${i} (ignorado).`;
+      console.log(logMessage);
+      logs.push(logMessage);
+    }
   }
 
-  if (logs.length === 0) {
-    logs.push("Nenhuma ação necessária.");
-  }
-
-  console.log("Worker finalizado.");
-  res.status(200).json({ message: "Worker executado.", logs: logs });
+  console.log("Backfill completo.");
+  res
+    .status(200)
+    .json({ message: "Worker executado com sucesso.", logs: logs });
 });
 
 // Rota Raiz (continua igual)
