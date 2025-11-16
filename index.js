@@ -267,7 +267,7 @@ app.get("/api/resultados", authMiddleware, async (req, res) => {
 // === NOVAS ROTAS DE JOGOS SALVOS ===
 // ===================================
 
-// ROTA PARA SALVAR UM NOVO JOGO
+// ROTA PARA SALVAR UM NOVO JOGO (A ROTA ANTIGA, AINDA ÚTIL)
 app.post("/api/jogos/salvar", authMiddleware, async (req, res) => {
   const { dezenas } = req.body;
   const usuario_id = req.usuario.id;
@@ -287,6 +287,47 @@ app.post("/api/jogos/salvar", authMiddleware, async (req, res) => {
     res.status(500).json({ error: "Erro interno ao salvar o jogo." });
   }
 });
+
+// =======================================================
+// === INÍCIO: NOVA ROTA PARA SALVAR EM LOTE (BULK)
+// =======================================================
+app.post("/api/jogos/salvar-lote", authMiddleware, async (req, res) => {
+  const { jogos } = req.body; // Espera um array de strings, ex: ["01 02...", "03 04..."]
+  const usuario_id = req.usuario.id;
+
+  // Validação
+  if (!Array.isArray(jogos) || jogos.length === 0) {
+    return res.status(400).json({ error: "Formato de jogos inválido." });
+  }
+
+  // Query otimizada para PostgreSQL usando 'unnest'
+  // Isso faz UMA SÓ operação no banco de dados para todos os jogos
+  const query = `
+    INSERT INTO jogos_salvos (dezenas, usuario_id)
+    SELECT 
+      dezenas_val, $2 
+    FROM unnest($1::text[]) AS dezenas_val
+    RETURNING id; 
+  `;
+  // $1::text[] -> Trata o primeiro parâmetro (jogos) como um array de texto
+  // $2 -> O segundo parâmetro (usuario_id)
+
+  try {
+    // Passa o array de jogos [jogos] e o ID do usuário [usuario_id]
+    const { rows } = await pool.query(query, [jogos, usuario_id]);
+
+    res.status(201).json({
+      message: `${rows.length} jogo(s) salvo(s) com sucesso.`,
+      jogosSalvos: rows.length,
+    });
+  } catch (error) {
+    console.error("Erro ao salvar jogos em lote:", error.message);
+    res.status(500).json({ error: "Erro interno ao salvar os jogos." });
+  }
+});
+// =======================================================
+// === FIM: NOVA ROTA PARA SALVAR EM LOTE (BULK)
+// =======================================================
 
 // ROTA PARA BUSCAR OS JOGOS DO USUÁRIO
 app.get("/api/jogos/meus-jogos", authMiddleware, async (req, res) => {
