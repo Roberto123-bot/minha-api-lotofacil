@@ -128,7 +128,7 @@ app.post("/api/login", async (req, res) => {
 });
 
 // ===================================
-// === NOVO: MIDDLEWARE DE AUTENTICAÇÃO ===
+// === MIDDLEWARE DE AUTENTICAÇÃO ===
 // ===================================
 // (Este é o "Segurança" da porta)
 function authMiddleware(req, res, next) {
@@ -154,8 +154,6 @@ function authMiddleware(req, res, next) {
 // === ROTAS DA LOTOFÁCIL (Resultados) ===
 // ===================================
 // (Suas funções e rotas de resultados continuam aqui... igual)
-
-// ... (getUltimoSalvo, normalizarConcurso, salvarConcurso, syncLotofacil) ...
 async function getUltimoSalvo() {
   try {
     const result = await pool.query(
@@ -270,16 +268,12 @@ app.get("/api/resultados", authMiddleware, async (req, res) => {
 // ===================================
 
 // ROTA PARA SALVAR UM NOVO JOGO
-// (authMiddleware garante que só usuários logados podem salvar)
 app.post("/api/jogos/salvar", authMiddleware, async (req, res) => {
-  const { dezenas } = req.body; // Pega as dezenas do front-end
-  const usuario_id = req.usuario.id; // Pega o ID do usuário (do token)
-
-  // Validação simples
+  const { dezenas } = req.body;
+  const usuario_id = req.usuario.id;
   if (!dezenas || typeof dezenas !== "string") {
     return res.status(400).json({ error: "Formato de dezenas inválido." });
   }
-
   try {
     const query = `
       INSERT INTO jogos_salvos (dezenas, usuario_id)
@@ -295,10 +289,8 @@ app.post("/api/jogos/salvar", authMiddleware, async (req, res) => {
 });
 
 // ROTA PARA BUSCAR OS JOGOS DO USUÁRIO
-// (authMiddleware garante que o usuário só veja os jogos dele)
 app.get("/api/jogos/meus-jogos", authMiddleware, async (req, res) => {
-  const usuario_id = req.usuario.id; // Pega o ID do usuário (do token)
-
+  const usuario_id = req.usuario.id;
   try {
     const query = `
       SELECT id, dezenas, data_criacao 
@@ -311,6 +303,43 @@ app.get("/api/jogos/meus-jogos", authMiddleware, async (req, res) => {
   } catch (error) {
     console.error("Erro ao buscar jogos:", error.message);
     res.status(500).json({ error: "Erro interno ao buscar seus jogos." });
+  }
+});
+
+// === NOVA ROTA PARA DELETAR JOGOS ===
+app.post("/api/jogos/delete", authMiddleware, async (req, res) => {
+  const { ids } = req.body; // Espera um array de IDs, ex: [1, 2, 5]
+  const usuario_id = req.usuario.id;
+
+  // Validação
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ error: "IDs de jogos inválidos." });
+  }
+
+  try {
+    // Comando SQL para deletar MÚLTIPLOS IDs de uma vez
+    // Ele só deleta os jogos ONDE o ID está na lista E o dono é o usuário logado
+    const query = `
+      DELETE FROM jogos_salvos
+      WHERE id = ANY($1::int[]) AND usuario_id = $2;
+    `;
+    // $1::int[] informa ao PostgreSQL que $1 é um array de inteiros
+
+    const result = await pool.query(query, [ids, usuario_id]);
+
+    // O 'rowCount' informa quantas linhas foram de fato deletadas
+    if (result.rowCount > 0) {
+      res.status(200).json({
+        message: `${result.rowCount} jogo(s) deletado(s) com sucesso.`,
+      });
+    } else {
+      res.status(404).json({
+        error: "Nenhum jogo encontrado para deletar (ou não pertencem a você).",
+      });
+    }
+  } catch (error) {
+    console.error("Erro ao deletar jogos:", error.message);
+    res.status(500).json({ error: "Erro interno ao deletar jogos." });
   }
 });
 
