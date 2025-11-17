@@ -271,6 +271,26 @@ app.get("/api/resultados", authMiddleware, async (req, res) => {
   }
 });
 
+// NOVA ROTA: Listar todos os fechamentos disponíveis
+app.get("/api/fechamentos/opcoes", authMiddleware, async (req, res) => {
+  try {
+    const query =
+      "SELECT codigo, dados->>'universo' as universo FROM fechamentos ORDER BY (dados->>'universo')::int";
+    const { rows } = await pool.query(query);
+
+    const opcoes = rows.map((row) => ({
+      codigo: row.codigo,
+      universo: parseInt(row.universo),
+      descricao: `Garantir 15 se acertar 15 (${row.universo} dezenas)`,
+    }));
+
+    res.json(opcoes);
+  } catch (error) {
+    console.error("Erro ao listar fechamentos:", error);
+    res.status(500).json({ error: "Erro ao listar fechamentos" });
+  }
+});
+
 // ===================================
 // === ROTAS DE FECHAMENTOS (NOVO)
 // ===================================
