@@ -34,8 +34,13 @@ if (!jwtSecret) {
   process.exit(1);
 }
 
+// --- AJUSTADO ---
+// Adicionado 'ssl' para compatibilidade com NeonDB / Vercel Postgres
 const pool = new Pool({
   connectionString: connectionString,
+  ssl: {
+    rejectUnauthorized: false,
+  },
 });
 
 // ===================================
@@ -442,7 +447,7 @@ app.post("/api/jogos/delete", authMiddleware, async (req, res) => {
         message: `${result.rowCount} jogo(s) deletado(s) com sucesso.`,
       });
     } else {
-      res.status(404).json({
+      res.status(4404).json({
         error: "Nenhum jogo encontrado para deletar.",
       });
     }
