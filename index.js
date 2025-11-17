@@ -267,6 +267,34 @@ app.get("/api/resultados", authMiddleware, async (req, res) => {
 });
 
 // ===================================
+// === ROTAS DE FECHAMENTOS (NOVO)
+// ===================================
+// --- ADICIONADO ---
+app.get("/api/fechamento/:codigo", authMiddleware, async (req, res) => {
+  const { codigo } = req.params;
+  console.log(`✅ Usuário ${req.usuario.email} buscando fechamento: ${codigo}`);
+
+  try {
+    const sqlQuery = "SELECT dados FROM fechamentos WHERE codigo = $1";
+    const { rows } = await pool.query(sqlQuery, [codigo]);
+
+    if (rows.length === 0) {
+      console.log(`❌ Fechamento '${codigo}' não encontrado.`);
+      return res.status(404).json({ error: "Fechamento não encontrado" });
+    }
+
+    // Retorna apenas o JSON da coluna 'dados'
+    // O node-postgres já faz o parse do JSONB
+    res.status(200).json(rows[0].dados);
+  } catch (error) {
+    console.error("❌ Erro ao buscar fechamento:", error.message);
+    res
+      .status(500)
+      .json({ error: "Erro interno do servidor.", detalhes: error.message });
+  }
+});
+
+// ===================================
 // === ROTAS DE JOGOS SALVOS
 // ===================================
 
@@ -460,6 +488,7 @@ app.get("/api/test", (req, res) => {
       "POST /api/jogos/salvar-lote", // <- A rota que está dando erro
       "GET /api/jogos/meus-jogos",
       "POST /api/jogos/delete",
+      "GET /api/fechamento/:codigo", // <-- NOVA ROTA AQUI
     ],
   });
 });
@@ -483,4 +512,5 @@ app.listen(port, () => {
   console.log(`   POST /api/jogos/salvar-lote`);
   console.log(`   GET  /api/jogos/meus-jogos`);
   console.log(`   POST /api/jogos/delete`);
+  console.log(`   GET  /api/fechamento/:codigo`); // <-- ADICIONADO AO LOG
 });
