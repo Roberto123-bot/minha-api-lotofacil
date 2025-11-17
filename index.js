@@ -271,30 +271,44 @@ app.get("/api/resultados", authMiddleware, async (req, res) => {
   }
 });
 
-// NOVA ROTA: Listar todos os fechamentos disponíveis
+// ===================================
+// === ROTAS DE FECHAMENTOS
+// ===================================
+
+// LISTAR OPÇÕES DE FECHAMENTOS DISPONÍVEIS (NOVO)
 app.get("/api/fechamentos/opcoes", authMiddleware, async (req, res) => {
+  console.log(
+    `✅ Usuário ${req.usuario.email} buscando opções de fechamentos...`
+  );
+
   try {
-    const query =
-      "SELECT codigo, dados->>'universo' as universo FROM fechamentos ORDER BY (dados->>'universo')::int";
+    const query = `
+      SELECT 
+        codigo, 
+        dados->>'universo' as universo,
+        dados->>'custo' as custo
+      FROM fechamentos 
+      ORDER BY (dados->>'universo')::int
+    `;
+
     const { rows } = await pool.query(query);
 
     const opcoes = rows.map((row) => ({
       codigo: row.codigo,
       universo: parseInt(row.universo),
-      descricao: `Garantir 15 se acertar 15 (${row.universo} dezenas)`,
+      custo: parseInt(row.custo),
+      descricao: `Garantir 15 se acertar 15 (${row.universo} dezenas - ${row.custo} jogos)`,
     }));
 
+    console.log(`✅ ${opcoes.length} opções de fechamento encontradas`);
     res.json(opcoes);
   } catch (error) {
-    console.error("Erro ao listar fechamentos:", error);
-    res.status(500).json({ error: "Erro ao listar fechamentos" });
+    console.error("❌ Erro ao listar fechamentos:", error.message);
+    res.status(500).json({ error: "Erro ao listar fechamentos disponíveis" });
   }
 });
 
-// ===================================
-// === ROTAS DE FECHAMENTOS (NOVO)
-// ===================================
-// --- ADICIONADO ---
+// BUSCAR FECHAMENTO ESPECÍFICO (JÁ EXISTE)
 app.get("/api/fechamento/:codigo", authMiddleware, async (req, res) => {
   const { codigo } = req.params;
   console.log(`✅ Usuário ${req.usuario.email} buscando fechamento: ${codigo}`);
@@ -308,8 +322,6 @@ app.get("/api/fechamento/:codigo", authMiddleware, async (req, res) => {
       return res.status(404).json({ error: "Fechamento não encontrado" });
     }
 
-    // Retorna apenas o JSON da coluna 'dados'
-    // O node-postgres já faz o parse do JSONB
     res.status(200).json(rows[0].dados);
   } catch (error) {
     console.error("❌ Erro ao buscar fechamento:", error.message);
