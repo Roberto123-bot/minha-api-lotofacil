@@ -525,6 +525,7 @@ app.get("/api/test", (req, res) => {
       "POST /api/jogos/salvar-lote", // <- A rota que está dando erro
       "GET /api/jogos/meus-jogos",
       "POST /api/jogos/delete",
+      "GET /api/fechamentos/opcoes",
       "GET /api/fechamento/:codigo", // <-- NOVA ROTA AQUI
     ],
   });
@@ -549,5 +550,6 @@ app.listen(port, () => {
   console.log(`   POST /api/jogos/salvar-lote`);
   console.log(`   GET  /api/jogos/meus-jogos`);
   console.log(`   POST /api/jogos/delete`);
+  console.log(`   GET  /api/fechamentos/opcoes`); // <-- ADICIONE
   console.log(`   GET  /api/fechamento/:codigo`); // <-- ADICIONADO AO LOG
 });
