@@ -6,17 +6,12 @@ const cors = require("cors");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 
-// --- MERCADO PAGO ---
-// Importando as classes necessárias da SDK v2
-const { MercadoPagoConfig, Preference, Payment } = require("mercadopago");
-
 const app = express();
 const port = process.env.PORT || 3000;
 
 // ===================================
-// === CONFIGURAÇÕES GLOBAIS
+// === MIDDLEWARES GLOBAIS
 // ===================================
-
 app.use(cors());
 app.use(express.json());
 
@@ -26,21 +21,20 @@ app.use((req, res, next) => {
   next();
 });
 
-// --- CONFIGURAÇÃO DO BANCO DE DADOS E SEGURANÇA ---
-// 1. Validar DATABASE_URL
+// --- CONFIGURAÇÃO DO BANCO DE DADOS ---
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) {
   console.error("ERRO: DATABASE_URL não encontrada.");
   process.exit(1);
 }
 
-// 2. Definir e Validar JWT_SECRET (CORREÇÃO APLICADA AQUI)
-const jwtSecret = process.env.JWT_SECRET; // <-- Definido antes de usar
+const jwtSecret = process.env.JWT_SECRET;
 if (!jwtSecret) {
   console.error("ERRO: JWT_SECRET não encontrado no .env");
   process.exit(1);
 }
 
+// --- AJUSTADO ---
 // Adicionado 'ssl' para compatibilidade com NeonDB / Vercel Postgres
 const pool = new Pool({
   connectionString: connectionString,
@@ -49,162 +43,30 @@ const pool = new Pool({
   },
 });
 
-// --- CONFIGURAÇÃO MERCADO PAGO ---
-// Inicializa o cliente com o Access Token do .env
-// Garanta que MP_ACCESS_TOKEN esteja no seu arquivo .env
-const client = new MercadoPagoConfig({
-  accessToken: process.env.MP_ACCESS_TOKEN,
-});
-
 // ===================================
 // === MIDDLEWARE DE AUTENTICAÇÃO
 // ===================================
 function authMiddleware(req, res, next) {
   const authHeader = req.headers["authorization"];
   const token = authHeader && authHeader.split(" ")[1];
-  if (!token) return res.status(401).json({ error: "Token não fornecido." });
+
+  if (token == null) {
+    return res
+      .status(401)
+      .json({ error: "Acesso não autorizado. Token não fornecido." });
+  }
 
   jwt.verify(token, jwtSecret, (err, usuario) => {
-    if (err) return res.status(403).json({ error: "Token inválido." });
+    if (err) {
+      console.error("❌ Token inválido:", err.message);
+      return res
+        .status(403)
+        .json({ error: "Acesso proibido. Token inválido." });
+    }
     req.usuario = usuario;
     next();
   });
 }
-
-async function checkPremiumMiddleware(req, res, next) {
-  if (!req.usuario)
-    return res.status(401).json({ error: "Autenticação necessária." });
-  const usuarioId = req.usuario.id;
-
-  try {
-    const { rows } = await pool.query(
-      "SELECT plano, plano_expira_em FROM usuarios WHERE id = $1",
-      [usuarioId]
-    );
-
-    if (rows.length === 0)
-      return res.status(404).json({ error: "Usuário não encontrado." });
-
-    const user = rows[0];
-    const hoje = new Date();
-
-    // Verifica se é premium E se a data de expiração é futura
-    if (user.plano === "premium" && new Date(user.plano_expira_em) > hoje) {
-      next(); // Acesso permitido
-    } else {
-      res.status(403).json({
-        error: "Recurso exclusivo Premium.",
-        isPremium: false,
-      });
-    }
-  } catch (error) {
-    console.error("Erro middleware premium:", error);
-    res.status(500).json({ error: "Erro interno." });
-  }
-}
-
-// ===================================
-// === ROTAS DE PAGAMENTO (MERCADO PAGO)
-// ===================================
-
-// 1. CRIAR PREFERÊNCIA DE PAGAMENTO
-app.post(
-  "/api/pagamento/criar-assinatura",
-  authMiddleware,
-  async (req, res) => {
-    const usuarioId = req.usuario.id;
-    const email = req.usuario.email;
-
-    try {
-      // URL do seu Backend (para o webhook)
-      const apiUrl =
-        "https://criadordigital-api-lotofacil-postgres.51xxn7.easypanel.host";
-
-      // URL do seu Front-end (para redirecionar após pagamento)
-      // IMPORTANTE: Ajuste para a URL real do seu site quando for para produção
-      const frontUrl = "https://projeto-lotofacil-api.vercel.app/index.html"; // <--- AJUSTAR ISSO
-
-      const preference = new Preference(client);
-
-      const body = {
-        items: [
-          {
-            id: "plano-premium-30d",
-            title: "Acesso Premium - Lotofácil (30 Dias)",
-            quantity: 1,
-            unit_price: 19.9, // Preço do plano
-            currency_id: "BRL",
-          },
-        ],
-        payer: {
-          email: email,
-        },
-        // O 'external_reference' é CRUCIAL. É aqui que guardamos o ID do usuário
-        external_reference: usuarioId.toString(),
-
-        // Configurações de retorno
-        back_urls: {
-          success: `${frontUrl}/app.html`, // Redireciona para o app logado
-          failure: `${frontUrl}/erro.html`,
-          pending: `${frontUrl}/pendente.html`,
-        },
-        auto_return: "approved",
-
-        // URL onde o Mercado Pago vai avisar que o pagamento ocorreu
-        notification_url: `${apiUrl}/api/pagamento/webhook`,
-      };
-
-      const result = await preference.create({ body });
-
-      // Retorna o link de pagamento (init_point)
-      res.json({ urlPagamento: result.init_point });
-    } catch (error) {
-      console.error("Erro ao criar preferência:", error);
-      res.status(500).json({ error: "Erro ao gerar pagamento." });
-    }
-  }
-);
-
-// 2. WEBHOOK (Recebe notificação do Mercado Pago)
-app.post("/api/pagamento/webhook", async (req, res) => {
-  const { type, data } = req.body;
-
-  // O Mercado Pago manda vários tipos de notificação.
-  const topic = req.query.topic || type;
-  const id = req.query.id || data?.id;
-
-  if (topic === "payment" && id) {
-    try {
-      console.log(`🔔 Webhook recebido. Pagamento ID: ${id}`);
-
-      // Consulta o Mercado Pago para ver o status real do pagamento
-      const payment = new Payment(client);
-      const pagamentoInfo = await payment.get({ id });
-
-      // Verifica se foi APROVADO
-      if (pagamentoInfo.status === "approved") {
-        const usuarioId = pagamentoInfo.external_reference; // Pegamos o ID do usuário de volta
-
-        if (usuarioId) {
-          // Atualiza o banco de dados: define como premium por 30 dias
-          await pool.query(
-            `UPDATE usuarios 
-             SET plano = 'premium', 
-                 plano_expira_em = NOW() + INTERVAL '30 days' 
-             WHERE id = $1`,
-            [usuarioId]
-          );
-          console.log(`✅ Usuário ${usuarioId} virou PREMIUM!`);
-        }
-      }
-    } catch (error) {
-      console.error("Erro ao processar webhook:", error);
-    }
-  }
-
-  // Sempre responda 200 OK para o Mercado Pago
-  res.status(200).send("OK");
-});
 
 // ===================================
 // === ROTAS DE AUTENTICAÇÃO
@@ -233,8 +95,6 @@ app.post("/api/register", async (req, res) => {
     const salt = await bcrypt.genSalt(10);
     const senha_hash = await bcrypt.hash(senha, salt);
 
-    // Insere o usuário. O padrão do plano é 'gratis' definido no banco,
-    // mas podemos forçar aqui se quiser.
     const newUser = await pool.query(
       "INSERT INTO usuarios (nome, email, senha_hash) VALUES ($1, $2, $3) RETURNING id, email, nome",
       [nome, email, senha_hash]
@@ -288,8 +148,6 @@ app.post("/api/login", async (req, res) => {
         id: user.id,
         email: user.email,
         nome: user.nome,
-        // Podemos retornar o plano aqui se quiser mostrar no front
-        plano: user.plano,
       },
     });
   } catch (error) {
@@ -417,7 +275,7 @@ app.get("/api/resultados", authMiddleware, async (req, res) => {
 // === ROTAS DE FECHAMENTOS
 // ===================================
 
-// LISTAR OPÇÕES DE FECHAMENTOS DISPONÍVEIS
+// LISTAR OPÇÕES DE FECHAMENTOS DISPONÍVEIS (NOVO)
 app.get("/api/fechamentos/opcoes", authMiddleware, async (req, res) => {
   console.log(
     `✅ Usuário ${req.usuario.email} buscando opções de fechamentos...`
@@ -428,8 +286,7 @@ app.get("/api/fechamentos/opcoes", authMiddleware, async (req, res) => {
       SELECT 
         codigo, 
         dados->>'universo' as universo,
-        dados->>'custo' as custo,
-        descricao -- Se você tiver a coluna descricao
+        dados->>'custo' as custo
       FROM fechamentos 
       ORDER BY (dados->>'universo')::int
     `;
@@ -440,10 +297,7 @@ app.get("/api/fechamentos/opcoes", authMiddleware, async (req, res) => {
       codigo: row.codigo,
       universo: parseInt(row.universo),
       custo: parseInt(row.custo),
-      // Usa a descrição do banco ou cria uma padrão
-      descricao:
-        row.descricao ||
-        `Garantir 15 se acertar 15 (${row.universo} dezenas - ${row.custo} jogos)`,
+      descricao: `Garantir 15 se acertar 15 (${row.universo} dezenas - ${row.custo} jogos)`,
     }));
 
     console.log(`✅ ${opcoes.length} opções de fechamento encontradas`);
@@ -454,35 +308,28 @@ app.get("/api/fechamentos/opcoes", authMiddleware, async (req, res) => {
   }
 });
 
-// BUSCAR FECHAMENTO ESPECÍFICO (PREMIUM)
-app.get(
-  "/api/fechamento/:codigo",
-  authMiddleware,
-  checkPremiumMiddleware,
-  async (req, res) => {
-    const { codigo } = req.params;
-    console.log(
-      `✅ Usuário PREMIUM ${req.usuario.email} buscando fechamento: ${codigo}`
-    );
+// BUSCAR FECHAMENTO ESPECÍFICO (JÁ EXISTE)
+app.get("/api/fechamento/:codigo", authMiddleware, async (req, res) => {
+  const { codigo } = req.params;
+  console.log(`✅ Usuário ${req.usuario.email} buscando fechamento: ${codigo}`);
 
-    try {
-      const sqlQuery = "SELECT dados FROM fechamentos WHERE codigo = $1";
-      const { rows } = await pool.query(sqlQuery, [codigo]);
+  try {
+    const sqlQuery = "SELECT dados FROM fechamentos WHERE codigo = $1";
+    const { rows } = await pool.query(sqlQuery, [codigo]);
 
-      if (rows.length === 0) {
-        console.log(`❌ Fechamento '${codigo}' não encontrado.`);
-        return res.status(404).json({ error: "Fechamento não encontrado" });
-      }
-
-      res.status(200).json(rows[0].dados);
-    } catch (error) {
-      console.error("❌ Erro ao buscar fechamento:", error.message);
-      res
-        .status(500)
-        .json({ error: "Erro interno do servidor.", detalhes: error.message });
+    if (rows.length === 0) {
+      console.log(`❌ Fechamento '${codigo}' não encontrado.`);
+      return res.status(404).json({ error: "Fechamento não encontrado" });
     }
+
+    res.status(200).json(rows[0].dados);
+  } catch (error) {
+    console.error("❌ Erro ao buscar fechamento:", error.message);
+    res
+      .status(500)
+      .json({ error: "Erro interno do servidor.", detalhes: error.message });
   }
-);
+});
 
 // ===================================
 // === ROTAS DE JOGOS SALVOS
@@ -513,16 +360,40 @@ app.post("/api/jogos/salvar", authMiddleware, async (req, res) => {
   }
 });
 
-// SALVAR EM LOTE (BULK)
+// =======================================================
+// === SALVAR EM LOTE (BULK) - VERSÃO CORRIGIDA
+// =======================================================
 app.post("/api/jogos/salvar-lote", authMiddleware, async (req, res) => {
   console.log("📥 POST /api/jogos/salvar-lote");
+  console.log("Body recebido:", req.body);
+  console.log("Usuário:", req.usuario.email);
+
   const { jogos } = req.body;
   const usuario_id = req.usuario.id;
 
-  if (!jogos || !Array.isArray(jogos) || jogos.length === 0) {
-    return res.status(400).json({ error: "Jogos inválidos." });
+  // Validação detalhada
+  if (!jogos) {
+    console.error("❌ Campo 'jogos' não enviado");
+    return res.status(400).json({
+      error: "Campo 'jogos' é obrigatório.",
+      recebido: req.body,
+    });
   }
 
+  if (!Array.isArray(jogos)) {
+    console.error("❌ 'jogos' não é um array");
+    return res.status(400).json({
+      error: "Campo 'jogos' deve ser um array.",
+      tipo_recebido: typeof jogos,
+    });
+  }
+
+  if (jogos.length === 0) {
+    console.error("❌ Array de jogos está vazio");
+    return res.status(400).json({ error: "Array de jogos está vazio." });
+  }
+
+  // Limite de segurança
   const MAX_JOGOS = 100;
   if (jogos.length > MAX_JOGOS) {
     return res.status(400).json({
@@ -531,8 +402,9 @@ app.post("/api/jogos/salvar-lote", authMiddleware, async (req, res) => {
     });
   }
 
-  console.log(`✅ Salvando ${jogos.length} jogos...`);
+  console.log(`✅ Validação OK: ${jogos.length} jogos para salvar`);
 
+  // Query otimizada usando unnest
   const query = `
     INSERT INTO jogos_salvos (dezenas, usuario_id)
     SELECT 
@@ -542,7 +414,9 @@ app.post("/api/jogos/salvar-lote", authMiddleware, async (req, res) => {
   `;
 
   try {
+    console.log("💾 Salvando no banco...");
     const { rows } = await pool.query(query, [jogos, usuario_id]);
+
     console.log(`✅ ${rows.length} jogos salvos com sucesso!`);
 
     res.status(201).json({
@@ -552,7 +426,10 @@ app.post("/api/jogos/salvar-lote", authMiddleware, async (req, res) => {
     });
   } catch (error) {
     console.error("❌ Erro ao salvar jogos em lote:", error);
-    res.status(500).json({ error: "Erro interno ao salvar os jogos." });
+    res.status(500).json({
+      error: "Erro interno ao salvar os jogos.",
+      detalhes: error.message,
+    });
   }
 });
 
@@ -602,7 +479,7 @@ app.post("/api/jogos/delete", authMiddleware, async (req, res) => {
         message: `${result.rowCount} jogo(s) deletado(s) com sucesso.`,
       });
     } else {
-      res.status(404).json({
+      res.status(4404).json({
         error: "Nenhum jogo encontrado para deletar.",
       });
     }
@@ -645,12 +522,11 @@ app.get("/api/test", (req, res) => {
       "POST /api/login",
       "GET /api/resultados",
       "POST /api/jogos/salvar",
-      "POST /api/jogos/salvar-lote",
+      "POST /api/jogos/salvar-lote", // <- A rota que está dando erro
       "GET /api/jogos/meus-jogos",
       "POST /api/jogos/delete",
       "GET /api/fechamentos/opcoes",
-      "GET /api/fechamento/:codigo",
-      "POST /api/pagamento/criar-assinatura",
+      "GET /api/fechamento/:codigo", // <-- NOVA ROTA AQUI
     ],
   });
 });
@@ -674,6 +550,6 @@ app.listen(port, () => {
   console.log(`   POST /api/jogos/salvar-lote`);
   console.log(`   GET  /api/jogos/meus-jogos`);
   console.log(`   POST /api/jogos/delete`);
-  console.log(`   GET  /api/fechamentos/opcoes`);
-  console.log(`   GET  /api/fechamento/:codigo`);
+  console.log(`   GET  /api/fechamentos/opcoes`); // <-- ADICIONE
+  console.log(`   GET  /api/fechamento/:codigo`); // <-- ADICIONADO AO LOG
 });
