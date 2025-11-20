@@ -394,7 +394,7 @@ app.post("/api/jogos/salvar-lote", authMiddleware, async (req, res) => {
   }
 
   // Limite de segurança
-  const MAX_JOGOS = 100;
+  const MAX_JOGOS = 1000;
   if (jogos.length > MAX_JOGOS) {
     return res.status(400).json({
       error: `Máximo de ${MAX_JOGOS} jogos por vez.`,
