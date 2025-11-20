@@ -371,21 +371,8 @@ app.post("/api/jogos/salvar-lote", authMiddleware, async (req, res) => {
   const { jogos } = req.body;
   const usuario_id = req.usuario.id;
 
-  // Validação detalhada
-  if (!jogos) {
-    console.error("❌ Campo 'jogos' não enviado");
-    return res.status(400).json({
-      error: "Campo 'jogos' é obrigatório.",
-      recebido: req.body,
-    });
-  }
-
-  if (!Array.isArray(jogos)) {
-    console.error("❌ 'jogos' não é um array");
-    return res.status(400).json({
-      error: "Campo 'jogos' deve ser um array.",
-      tipo_recebido: typeof jogos,
-    });
+  if (!Array.isArray(jogos) || jogos.length === 0) {
+    return res.status(400).json({ error: "Campo 'jogos' inválido ou vazio." });
   }
 
   if (jogos.length === 0) {
@@ -414,7 +401,6 @@ app.post("/api/jogos/salvar-lote", authMiddleware, async (req, res) => {
   `;
 
   try {
-    console.log("💾 Salvando no banco...");
     const { rows } = await pool.query(query, [jogos, usuario_id]);
 
     console.log(`✅ ${rows.length} jogos salvos com sucesso!`);
@@ -433,6 +419,60 @@ app.post("/api/jogos/salvar-lote", authMiddleware, async (req, res) => {
   }
 });
 
+// =======================================================
+// === ROTA 2: SALVAR EM LOTE (COM NOME) - ROTA NOVA
+// =======================================================
+app.post("/api/jogos/salvar-lote-nomeado", authMiddleware, async (req, res) => {
+  console.log("📥 POST /api/jogos/salvar-lote-nomeado (COM NOME)");
+
+  const { jogos, nome } = req.body;
+  const usuario_id = req.usuario.id;
+  const nomeJogo = nome || "Jogo Salvo"; // Default se o nome não for enviado
+
+  if (!Array.isArray(jogos) || jogos.length === 0) {
+    return res.status(400).json({ error: "Campo 'jogos' inválido ou vazio." });
+  } // ⚠️ IMPORTANTE: Aumentamos o limite para 1000 aqui, pois o frontend usa esse limite.
+  const MAX_JOGOS = 1000;
+  if (jogos.length > MAX_JOGOS) {
+    return res.status(400).json({
+      error: `Máximo de ${MAX_JOGOS} jogos por vez.`,
+      enviados: jogos.length,
+    });
+  }
+
+  console.log(
+    `✅ Validação OK: ${jogos.length} jogos de "${nomeJogo}" para salvar`
+  ); // Query otimizada usando unnest, agora incluindo a coluna nome_jogo
+
+  const query = `
+INSERT INTO jogos_salvos (dezenas, usuario_id, nome_jogo)
+SELECT 
+dezenas_val, 
+$2, 
+$3
+FROM unnest($1::text[]) AS dezenas_val
+RETURNING id; 
+`;
+
+  try {
+    const { rows } = await pool.query(query, [jogos, usuario_id, nomeJogo]);
+
+    console.log(`✅ ${rows.length} jogos salvos com sucesso!`);
+
+    res.status(201).json({
+      success: true,
+      message: `${rows.length} jogo(s) de "${nomeJogo}" salvo(s) com sucesso.`,
+      jogosSalvos: rows.length,
+    });
+  } catch (error) {
+    console.error("❌ Erro ao salvar jogos em lote nomeado:", error);
+    res.status(500).json({
+      error: "Erro interno ao salvar os jogos.",
+      detalhes: error.message,
+    });
+  }
+});
+
 // BUSCAR JOGOS DO USUÁRIO
 app.get("/api/jogos/meus-jogos", authMiddleware, async (req, res) => {
   console.log("📥 GET /api/jogos/meus-jogos");
@@ -440,8 +480,9 @@ app.get("/api/jogos/meus-jogos", authMiddleware, async (req, res) => {
   const usuario_id = req.usuario.id;
 
   try {
+    // Buscando nome_jogo junto com o resto dos dados
     const query = `
-      SELECT id, dezenas, data_criacao 
+      SELECT id, dezenas, data_criacao, nome_jogo
       FROM jogos_salvos
       WHERE usuario_id = $1
       ORDER BY data_criacao DESC;
@@ -523,6 +564,7 @@ app.get("/api/test", (req, res) => {
       "GET /api/resultados",
       "POST /api/jogos/salvar",
       "POST /api/jogos/salvar-lote", // <- A rota que está dando erro
+      "POST /api/jogos/salvar-lote-nomeado", // <-- NOVA ROTA ADICIONADA
       "GET /api/jogos/meus-jogos",
       "POST /api/jogos/delete",
       "GET /api/fechamentos/opcoes",
@@ -548,6 +590,7 @@ app.listen(port, () => {
   console.log(`📍 URL: http://localhost:${port}`);
   console.log(`✅ Rotas disponíveis:`);
   console.log(`   POST /api/jogos/salvar-lote`);
+  console.log(`   POST /api/jogos/salvar-lote-nomeado`); // <-- NOVA ROTA ADICIONADA
   console.log(`   GET  /api/jogos/meus-jogos`);
   console.log(`   POST /api/jogos/delete`);
   console.log(`   GET  /api/fechamentos/opcoes`); // <-- ADICIONE
