@@ -512,6 +512,233 @@ app.get("/", (req, res) => {
   res.send("API da Lotofácil (PostgreSQL + Express) está no ar. ✅");
 });
 
+// ===================================
+// === ROTAS DE BOLÕES/GRUPOS
+// ===================================
+
+// LISTAR BOLÕES DO USUÁRIO
+app.get("/api/boloes", authMiddleware, async (req, res) => {
+  console.log(`✅ Usuário ${req.usuario.email} buscando bolões...`);
+
+  const usuario_id = req.usuario.id;
+
+  try {
+    const query = `
+      SELECT 
+        b.id, 
+        b.nome, 
+        b.data_criacao,
+        COUNT(j.id) as total_jogos
+      FROM boloes b
+      LEFT JOIN jogos_salvos j ON j.bolao_id = b.id
+      WHERE b.usuario_id = $1
+      GROUP BY b.id, b.nome, b.data_criacao
+      ORDER BY b.data_criacao DESC;
+    `;
+
+    const { rows } = await pool.query(query, [usuario_id]);
+    console.log(`✅ ${rows.length} bolões encontrados`);
+    res.status(200).json(rows);
+  } catch (error) {
+    console.error("Erro ao buscar bolões:", error.message);
+    res.status(500).json({ error: "Erro interno ao buscar bolões." });
+  }
+});
+
+// CRIAR NOVO BOLÃO
+app.post("/api/boloes", authMiddleware, async (req, res) => {
+  console.log("📥 POST /api/boloes");
+
+  const { nome } = req.body;
+  const usuario_id = req.usuario.id;
+
+  if (!nome || nome.trim() === "") {
+    return res.status(400).json({ error: "Nome do bolão é obrigatório." });
+  }
+
+  try {
+    const query = `
+      INSERT INTO boloes (nome, usuario_id)
+      VALUES ($1, $2)
+      RETURNING id, nome, data_criacao;
+    `;
+
+    const { rows } = await pool.query(query, [nome.trim(), usuario_id]);
+    console.log(`✅ Bolão '${nome}' criado com ID ${rows[0].id}`);
+    res.status(201).json(rows[0]);
+  } catch (error) {
+    console.error("Erro ao criar bolão:", error.message);
+    res.status(500).json({ error: "Erro interno ao criar bolão." });
+  }
+});
+
+// ATUALIZAR NOME DO BOLÃO
+app.put("/api/boloes/:id", authMiddleware, async (req, res) => {
+  console.log("📥 PUT /api/boloes/:id");
+
+  const { id } = req.params;
+  const { nome } = req.body;
+  const usuario_id = req.usuario.id;
+
+  if (!nome || nome.trim() === "") {
+    return res.status(400).json({ error: "Nome do bolão é obrigatório." });
+  }
+
+  try {
+    const query = `
+      UPDATE boloes 
+      SET nome = $1 
+      WHERE id = $2 AND usuario_id = $3
+      RETURNING id, nome, data_criacao;
+    `;
+
+    const { rows } = await pool.query(query, [nome.trim(), id, usuario_id]);
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: "Bolão não encontrado." });
+    }
+
+    console.log(`✅ Bolão ${id} atualizado`);
+    res.status(200).json(rows[0]);
+  } catch (error) {
+    console.error("Erro ao atualizar bolão:", error.message);
+    res.status(500).json({ error: "Erro interno ao atualizar bolão." });
+  }
+});
+
+// DELETAR BOLÃO
+app.delete("/api/boloes/:id", authMiddleware, async (req, res) => {
+  console.log("📥 DELETE /api/boloes/:id");
+
+  const { id } = req.params;
+  const usuario_id = req.usuario.id;
+
+  try {
+    // Primeiro, desassocia os jogos (seta bolao_id = NULL)
+    await pool.query(
+      "UPDATE jogos_salvos SET bolao_id = NULL WHERE bolao_id = $1",
+      [id]
+    );
+
+    // Depois deleta o bolão
+    const query = `
+      DELETE FROM boloes 
+      WHERE id = $1 AND usuario_id = $2
+      RETURNING id;
+    `;
+
+    const { rows } = await pool.query(query, [id, usuario_id]);
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: "Bolão não encontrado." });
+    }
+
+    console.log(`✅ Bolão ${id} deletado`);
+    res.status(200).json({ message: "Bolão deletado com sucesso." });
+  } catch (error) {
+    console.error("Erro ao deletar bolão:", error.message);
+    res.status(500).json({ error: "Erro interno ao deletar bolão." });
+  }
+});
+
+// ===================================
+// === ATUALIZAÇÃO: SALVAR JOGOS COM BOLÃO
+// ===================================
+
+// SALVAR EM LOTE COM BOLÃO (VERSÃO ATUALIZADA)
+app.post(
+  "/api/jogos/salvar-lote-com-bolao",
+  authMiddleware,
+  async (req, res) => {
+    console.log("📥 POST /api/jogos/salvar-lote-com-bolao");
+
+    const { jogos, bolao_id } = req.body;
+    const usuario_id = req.usuario.id;
+
+    // Validações
+    if (!jogos || !Array.isArray(jogos) || jogos.length === 0) {
+      return res.status(400).json({ error: "Array de jogos inválido." });
+    }
+
+    const MAX_JOGOS = 100;
+    if (jogos.length > MAX_JOGOS) {
+      return res.status(400).json({
+        error: `Máximo de ${MAX_JOGOS} jogos por vez.`,
+      });
+    }
+
+    console.log(`✅ Validação OK: ${jogos.length} jogos para salvar`);
+    console.log(`📌 Bolão ID: ${bolao_id || "Nenhum"}`);
+
+    try {
+      const query = `
+      INSERT INTO jogos_salvos (dezenas, usuario_id, bolao_id)
+      SELECT 
+        dezenas_val, $2, $3
+      FROM unnest($1::text[]) AS dezenas_val
+      RETURNING id; 
+    `;
+
+      const { rows } = await pool.query(query, [
+        jogos,
+        usuario_id,
+        bolao_id || null,
+      ]);
+
+      console.log(`✅ ${rows.length} jogos salvos com sucesso!`);
+
+      res.status(201).json({
+        success: true,
+        message: `${rows.length} jogo(s) salvo(s) com sucesso.`,
+        jogosSalvos: rows.length,
+      });
+    } catch (error) {
+      console.error("❌ Erro ao salvar jogos em lote:", error);
+      res.status(500).json({
+        error: "Erro interno ao salvar os jogos.",
+        detalhes: error.message,
+      });
+    }
+  }
+);
+
+// BUSCAR JOGOS COM FILTRO DE BOLÃO (VERSÃO ATUALIZADA)
+app.get("/api/jogos/meus-jogos-filtrado", authMiddleware, async (req, res) => {
+  console.log("📥 GET /api/jogos/meus-jogos-filtrado");
+
+  const usuario_id = req.usuario.id;
+  const { bolao_id } = req.query;
+
+  try {
+    let query = `
+      SELECT j.id, j.dezenas, j.data_criacao, j.bolao_id, b.nome as bolao_nome
+      FROM jogos_salvos j
+      LEFT JOIN boloes b ON j.bolao_id = b.id
+      WHERE j.usuario_id = $1
+    `;
+
+    const params = [usuario_id];
+
+    if (bolao_id) {
+      if (bolao_id === "sem-bolao") {
+        query += ` AND j.bolao_id IS NULL`;
+      } else {
+        query += ` AND j.bolao_id = $2`;
+        params.push(bolao_id);
+      }
+    }
+
+    query += ` ORDER BY j.data_criacao DESC;`;
+
+    const { rows } = await pool.query(query, params);
+    console.log(`✅ ${rows.length} jogos encontrados`);
+    res.status(200).json(rows);
+  } catch (error) {
+    console.error("Erro ao buscar jogos:", error.message);
+    res.status(500).json({ error: "Erro interno ao buscar seus jogos." });
+  }
+});
+
 // Rota de teste (útil para debug)
 app.get("/api/test", (req, res) => {
   res.json({
