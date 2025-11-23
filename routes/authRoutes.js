@@ -28,9 +28,20 @@ const transporter = nodemailer.createTransport({
 });
 
 // Verifica configuração do e-mail na inicialização
+console.log("📧 Configuração de E-mail:");
+console.log("   Host:", process.env.EMAIL_HOST);
+console.log("   Port:", process.env.EMAIL_PORT);
+console.log("   User:", process.env.EMAIL_USER);
+console.log(
+  "   Pass:",
+  process.env.EMAIL_PASS ? "✅ Configurada" : "❌ Faltando"
+);
+
 transporter.verify((error, success) => {
   if (error) {
     console.error("❌ Erro na configuração do e-mail:", error.message);
+    console.error("   Código:", error.code);
+    console.error("   Detalhes:", error);
   } else {
     console.log("✅ Servidor de e-mail pronto para enviar mensagens");
   }
@@ -89,6 +100,7 @@ router.post("/forgot-password", async (req, res) => {
     console.log(`🔗 Link de redefinição gerado: ${resetLink}`);
 
     // Envia e-mail
+    console.log("📤 Tentando enviar e-mail...");
     const mailOptions = {
       from: `"Lotofácil" <${process.env.EMAIL_USER}>`,
       to: email,
@@ -159,20 +171,28 @@ router.post("/forgot-password", async (req, res) => {
     });
   } catch (error) {
     console.error("❌ Erro ao processar forgot-password:", error);
+    console.error("   Stack:", error.stack);
+    console.error("   Code:", error.code);
+    console.error("   Response:", error.response);
 
     // Mensagem de erro mais específica para debug
     let errorMessage = "Erro ao processar solicitação.";
+    let detalhesErro = error.message;
+
     if (error.code === "EAUTH") {
       errorMessage =
-        "Erro de autenticação do e-mail. Verifique as credenciais.";
+        "Erro de autenticação do e-mail. Verifique EMAIL_USER e EMAIL_PASS.";
+      detalhesErro =
+        "Credenciais do Gmail inválidas. Certifique-se de usar uma senha de app.";
     } else if (error.code === "ECONNECTION") {
       errorMessage = "Erro de conexão com servidor de e-mail.";
+    } else if (error.code === "ETIMEDOUT") {
+      errorMessage = "Tempo esgotado ao conectar com servidor de e-mail.";
     }
 
     res.status(500).json({
       error: errorMessage,
-      detalhes:
-        process.env.NODE_ENV === "development" ? error.message : undefined,
+      detalhes: detalhesErro,
     });
   }
 });
