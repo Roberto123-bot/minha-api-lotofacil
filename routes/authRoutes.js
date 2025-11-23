@@ -1,202 +1,285 @@
 const express = require("express");
 const router = express.Router();
-const bcrypt = require("bcryptjs");
 const crypto = require("crypto");
-const nodemailer = require("nodemailer");
-// Garante que as variáveis de ambiente (como EMAIL_USER, FRONTEND_URL) sejam carregadas
-require("dotenv").config();
+const bcrypt = require("bcryptjs");
 
-// Importa a pool de conexão do index.js.
-const { pool } = require("../index");
+// IMPORTANTE: Ajuste o caminho conforme seu arquivo principal
+let pool;
+try {
+  pool = require("../server").pool;
+} catch (err) {
+  pool = require("../index").pool;
+}
 
-// ----------------------------------------------------
-// Configuração do Transporter (USANDO PORTA 465 PARA ESTABILIDADE)
-// ----------------------------------------------------
-const transporter = nodemailer.createTransport({
-  // Host do Gmail
-  host: "smtp.gmail.com",
-  // CRÍTICO: Usando porta 465 para SSL implícito (melhor para hospedagens)
-  port: 465,
-  // CRÍTICO: Deve ser 'true' para porta 465
-  secure: true,
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS, // Senha de Aplicação do Google
-  },
-});
-// ----------------------------------------------------
+// ===================================
+// === CONFIGURAÇÃO DO RESEND (alternativa ao Gmail)
+// ===================================
+const { Resend } = require("resend");
+const resend = new Resend(process.env.RESEND_API_KEY);
 
-// ==========================================================
-// 🚨 ROTA DE TESTE DE EMAIL (Para verificar as credenciais)
-// ==========================================================
-router.post("/test-email", async (req, res) => {
-  const { email } = req.body;
+// Verifica configuração
+console.log("📧 Configuração de E-mail:");
+console.log(
+  "   Método:",
+  process.env.RESEND_API_KEY ? "Resend API" : "SMTP Gmail"
+);
+console.log(
+  "   Resend API:",
+  process.env.RESEND_API_KEY ? "✅ Configurada" : "❌ Faltando"
+);
 
-  console.log(`📥 Testando envio de email para: ${email}`);
-
-  try {
-    // Verifica se a conexão SMTP está funcionando (útil para detectar falhas de AUTH)
-    await transporter.verify();
-    console.log(
-      "✅ Servidor de email pronto para receber mensagens (verify ok)"
-    );
-
-    const info = await transporter.sendMail({
-      from: `"Teste API Lotofácil" <${process.env.EMAIL_USER}>`,
-      to: email,
-      subject: "TESTE DE CONEXÃO SMTP - SUCESSO!",
-      html: "<p>Este e-mail confirma que suas credenciais e configurações de porta do Nodemailer estão funcionando corretamente.</p>",
-    });
-
-    console.log(`✅ Email de teste enviado: ${info.messageId}`);
-    res
-      .status(200)
-      .json({
-        message: "Email de teste enviado com sucesso!",
-        messageId: info.messageId,
-      });
-  } catch (error) {
-    console.error("❌ ERRO NO TESTE DE EMAIL:", error);
-    res.status(500).json({
-      message: "ERRO CRÍTICO: Falha na conexão ou autenticação SMTP.",
-      detalhes:
-        "Verifique 'EMAIL_USER' e 'EMAIL_PASS' (Senha de Aplicação) no seu .env. O erro técnico foi: " +
-        error.message,
-      erroTecnico: error.message,
-    });
-  }
-});
-
-// ==========================================================
-// Rota POST: /api/forgot-password (Passo 2)
-// ==========================================================
+// ===================================
+// === ROTA: SOLICITAR REDEFINIÇÃO
+// ===================================
 router.post("/forgot-password", async (req, res) => {
-  const { email } = req.body;
-  let user;
+  console.log("📥 POST /api/forgot-password");
 
   try {
-    const result = await pool.query(
-      "SELECT id FROM usuarios WHERE email = $1",
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({
+        error: "E-mail é obrigatório.",
+      });
+    }
+
+    // Verifica se o usuário existe
+    const userResult = await pool.query(
+      "SELECT id, nome, email FROM usuarios WHERE email = $1",
       [email]
     );
-    user = result.rows[0];
-  } catch (error) {
-    console.error("Erro na busca do usuário:", error.message);
-  }
 
-  // Ponto de Segurança: Sempre retorna 200 OK, mesmo que o email não exista.
-  if (!user) {
-    return res
-      .status(200)
-      .json({
+    if (userResult.rows.length === 0) {
+      // Por segurança, não revela se o e-mail existe ou não
+      console.log(`⚠️ E-mail não encontrado: ${email}`);
+      return res.status(200).json({
         message:
-          "Se o e-mail estiver registrado, você receberá um link de redefinição.",
+          "Se o e-mail estiver cadastrado, você receberá um link para redefinir a senha.",
       });
-  }
+    }
 
-  const userId = user.id;
-  const token = crypto.randomBytes(20).toString("hex");
-  const expiresAt = new Date(Date.now() + 60000 * 15); // 15 minutos
+    const user = userResult.rows[0];
 
-  try {
-    // 1. LÓGICA DE SEGURANÇA: Deleta qualquer token existente para este usuário
-    await pool.query("DELETE FROM password_reset_tokens WHERE user_id = $1", [
-      userId,
-    ]);
+    // Gera token único e seguro
+    const token = crypto.randomBytes(32).toString("hex");
+    const expires_at = new Date(Date.now() + 3600000); // 1 hora
 
-    // 2. Insere o novo token no Neon
+    // Salva token no banco
     await pool.query(
-      "INSERT INTO password_reset_tokens (user_id, token, expires_at) VALUES ($1, $2, $3)",
-      [userId, token, expiresAt]
+      `INSERT INTO password_reset_tokens (user_id, token, expires_at)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (user_id) 
+       DO UPDATE SET token = $2, expires_at = $3`,
+      [user.id, token, expires_at]
     );
 
-    // 3. Monta e envia o e-mail
-    // Garante que a URL base termine com barra
-    const frontendUrlBase = process.env.FRONTEND_URL.endsWith("/")
-      ? process.env.FRONTEND_URL
-      : process.env.FRONTEND_URL + "/";
-    const resetLink = `${frontendUrlBase}reset-password.html?token=${token}`;
+    // Link de redefinição
+    const resetLink = `${process.env.FRONTEND_URL}/reset-password?token=${token}`;
 
-    await transporter.sendMail({
-      from: `"Lotofácil" <${process.env.EMAIL_USER}>`,
-      to: email,
-      subject: "Redefinição de Senha - LOTOFACIL",
+    console.log(`🔗 Link de redefinição gerado: ${resetLink}`);
+
+    // Envia e-mail usando Resend
+    console.log("📤 Tentando enviar e-mail via Resend...");
+
+    const { data, error } = await resend.emails.send({
+      from: "Lotofácil <onboarding@resend.dev>", // Use seu domínio verificado ou o padrão
+      to: [email],
+      subject: "🔐 Redefinição de Senha - Lotofácil",
       html: `
-                <p>Você solicitou a redefinição de sua senha.</p>
-                <p>Clique no link abaixo para criar uma nova senha:</p>
-                <a href="${resetLink}">Redefinir Minha Senha</a>
-                <p>Este link expira em 15 minutos.</p>
-            `,
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="UTF-8">
+          <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+            .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+                      color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
+            .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }
+            .button { display: inline-block; padding: 15px 30px; background-color: #4CAF50; 
+                     color: white !important; text-decoration: none; border-radius: 5px; 
+                     font-weight: bold; margin: 20px 0; }
+            .warning { background: #fff3cd; border-left: 4px solid #ffc107; padding: 12px; 
+                      margin: 20px 0; }
+            .footer { margin-top: 20px; padding-top: 20px; border-top: 1px solid #ddd; 
+                     font-size: 12px; color: #666; text-align: center; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header">
+              <h1>🎰 Lotofácil</h1>
+              <p>Redefinição de Senha</p>
+            </div>
+            <div class="content">
+              <p>Olá, <strong>${user.nome}</strong>!</p>
+              <p>Você solicitou a redefinição de senha da sua conta.</p>
+              <p>Clique no botão abaixo para criar uma nova senha:</p>
+              
+              <center>
+                <a href="${resetLink}" class="button">🔓 Redefinir Senha</a>
+              </center>
+              
+              <div class="warning">
+                <strong>⏰ Atenção:</strong> Este link é válido por <strong>1 hora</strong>.
+              </div>
+              
+              <p style="color: #666; font-size: 14px;">
+                Se você não solicitou esta redefinição, ignore este e-mail.
+              </p>
+              
+              <div class="footer">
+                <p>Se o botão não funcionar, copie e cole este link:</p>
+                <p style="word-break: break-all; color: #667eea;">${resetLink}</p>
+                <p style="margin-top: 20px;">© ${new Date().getFullYear()} Lotofácil</p>
+              </div>
+            </div>
+          </div>
+        </body>
+        </html>
+      `,
     });
-    console.log(
-      `✅ Email enviado com sucesso para ${email}. Link: ${resetLink}`
-    );
 
-    return res
-      .status(200)
-      .json({
-        message:
-          "Se o e-mail estiver registrado, você receberá um link de redefinição.",
-      });
-  } catch (error) {
-    console.error(
-      "❌ ERRO GRAVE ao processar forgot-password (Nodemailer):",
-      error.message
-    );
-    return res.status(500).json({
+    if (error) {
+      throw error;
+    }
+
+    console.log(`✅ E-mail enviado com sucesso! ID: ${data.id}`);
+
+    res.status(200).json({
       message:
-        "Erro no servidor ao enviar o email. O token foi gerado, mas o envio falhou.",
-      detalhes: error.message,
+        "E-mail de redefinição enviado com sucesso! Verifique sua caixa de entrada.",
+    });
+  } catch (error) {
+    console.error("❌ Erro ao processar forgot-password:", error);
+    console.error("   Stack:", error.stack);
+
+    let errorMessage = "Erro ao processar solicitação.";
+    let detalhesErro = error.message;
+
+    if (error.message.includes("API key")) {
+      errorMessage = "Erro de configuração do serviço de e-mail.";
+      detalhesErro = "RESEND_API_KEY não configurada ou inválida.";
+    }
+
+    res.status(500).json({
+      error: errorMessage,
+      detalhes: detalhesErro,
     });
   }
 });
 
-// ==========================================================
-// Rota POST: /api/reset-password (Passo 3)
-// ==========================================================
+// ===================================
+// === ROTA: REDEFINIR SENHA
+// ===================================
 router.post("/reset-password", async (req, res) => {
-  const { token, newPassword } = req.body;
+  console.log("📥 POST /api/reset-password");
 
-  // 1. Valida o token e verifica se não expirou
-  let tokenRecord;
   try {
-    const result = await pool.query(
-      "SELECT user_id FROM password_reset_tokens WHERE token = $1 AND expires_at > NOW()",
+    const { token, novaSenha } = req.body;
+
+    if (!token || !novaSenha) {
+      return res.status(400).json({
+        error: "Token e nova senha são obrigatórios.",
+      });
+    }
+
+    if (novaSenha.length < 6) {
+      return res.status(400).json({
+        error: "A senha deve ter no mínimo 6 caracteres.",
+      });
+    }
+
+    // Busca token válido
+    const resetResult = await pool.query(
+      `SELECT pr.*, u.email, u.nome 
+       FROM password_reset_tokens pr
+       JOIN usuarios u ON pr.user_id = u.id
+       WHERE pr.token = $1 AND pr.expires_at > NOW()`,
       [token]
     );
-    tokenRecord = result.rows[0];
-  } catch (error) {
-    return res.status(500).json({ message: "Erro ao buscar token." });
-  }
 
-  if (!tokenRecord) {
-    return res.status(400).json({ error: "Token inválido ou expirado." });
-  }
+    if (resetResult.rows.length === 0) {
+      console.log(`❌ Token inválido ou expirado: ${token}`);
+      return res.status(400).json({
+        error:
+          "Token inválido ou expirado. Solicite um novo link de redefinição.",
+      });
+    }
 
-  const userId = tokenRecord.user_id;
+    const reset = resetResult.rows[0];
 
-  try {
-    // 2. Criptografa a nova senha
+    // Criptografa nova senha
     const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(newPassword, salt);
+    const senha_hash = await bcrypt.hash(novaSenha, salt);
 
-    // 3. Atualiza a senha na tabela 'usuarios' (ATENÇÃO: Nome da coluna é 'senha_hash')
+    // Atualiza senha no banco
     await pool.query("UPDATE usuarios SET senha_hash = $1 WHERE id = $2", [
-      hashedPassword,
-      userId,
+      senha_hash,
+      reset.user_id,
     ]);
 
-    // 4. Limpa o token para evitar reutilização
-    await pool.query("DELETE FROM password_reset_tokens WHERE token = $1", [
-      token,
+    // Remove token usado (evita reutilização)
+    await pool.query("DELETE FROM password_reset_tokens WHERE user_id = $1", [
+      reset.user_id,
     ]);
 
-    return res
-      .status(200)
-      .json({ message: "Senha redefinida com sucesso. Faça login." });
+    console.log(`✅ Senha redefinida com sucesso para: ${reset.email}`);
+
+    // Envia e-mail de confirmação (opcional)
+    try {
+      await resend.emails.send({
+        from: "Lotofácil <onboarding@resend.dev>",
+        to: [reset.email],
+        subject: "✅ Senha Redefinida com Sucesso",
+        html: `
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <meta charset="UTF-8">
+            <style>
+              body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+              .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+              .header { background: linear-gradient(135deg, #4CAF50 0%, #45a049 100%); 
+                        color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
+              .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }
+            </style>
+          </head>
+          <body>
+            <div class="container">
+              <div class="header">
+                <h1>✅ Senha Alterada!</h1>
+              </div>
+              <div class="content">
+                <p>Olá, <strong>${reset.nome}</strong>!</p>
+                <p>Sua senha foi redefinida com sucesso.</p>
+                <p>Se você não realizou esta alteração, entre em contato imediatamente.</p>
+                <p style="margin-top: 30px; color: #666;">
+                  Data: ${new Date().toLocaleString("pt-BR")}
+                </p>
+              </div>
+            </div>
+          </body>
+          </html>
+        `,
+      });
+    } catch (emailError) {
+      console.error(
+        "⚠️ Erro ao enviar e-mail de confirmação:",
+        emailError.message
+      );
+    }
+
+    res.status(200).json({
+      message:
+        "Senha redefinida com sucesso! Você já pode fazer login com a nova senha.",
+    });
   } catch (error) {
-    console.error("Erro ao redefinir senha:", error.message);
-    return res.status(500).json({ message: "Erro interno do servidor." });
+    console.error("❌ Erro ao redefinir senha:", error);
+    res.status(500).json({
+      error: "Erro ao redefinir senha. Tente novamente.",
+      detalhes: error.message,
+    });
   }
 });
 
