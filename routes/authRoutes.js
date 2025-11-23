@@ -3,28 +3,73 @@ const router = express.Router();
 const bcrypt = require("bcryptjs");
 const crypto = require("crypto");
 const nodemailer = require("nodemailer");
+// Garante que as variáveis de ambiente (como EMAIL_USER, FRONTEND_URL) sejam carregadas
 require("dotenv").config();
 
 // Importa a pool de conexão do index.js.
-// Certifique-se que o 'index.js' está exportando corretamente (no final do arquivo)
 const { pool } = require("../index");
 
 // ----------------------------------------------------
 // Configuração do Transporter (USANDO PORTA 465 PARA ESTABILIDADE)
 // ----------------------------------------------------
 const transporter = nodemailer.createTransport({
-  // Hardcoded para Gmail, pois você está usando gmail.com
+  // Host do Gmail
   host: "smtp.gmail.com",
-  port: 465, // ⚠️ CRÍTICO: Usando porta 465 para SSL implícito
-  secure: true, // ⚠️ CRÍTICO: Deve ser 'true' para porta 465
+  // CRÍTICO: Usando porta 465 para SSL implícito (melhor para hospedagens)
+  port: 465,
+  // CRÍTICO: Deve ser 'true' para porta 465
+  secure: true,
   auth: {
     user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
+    pass: process.env.EMAIL_PASS, // Senha de Aplicação do Google
   },
 });
 // ----------------------------------------------------
 
+// ==========================================================
+// 🚨 ROTA DE TESTE DE EMAIL (Para verificar as credenciais)
+// ==========================================================
+router.post("/test-email", async (req, res) => {
+  const { email } = req.body;
+
+  console.log(`📥 Testando envio de email para: ${email}`);
+
+  try {
+    // Verifica se a conexão SMTP está funcionando (útil para detectar falhas de AUTH)
+    await transporter.verify();
+    console.log(
+      "✅ Servidor de email pronto para receber mensagens (verify ok)"
+    );
+
+    const info = await transporter.sendMail({
+      from: `"Teste API Lotofácil" <${process.env.EMAIL_USER}>`,
+      to: email,
+      subject: "TESTE DE CONEXÃO SMTP - SUCESSO!",
+      html: "<p>Este e-mail confirma que suas credenciais e configurações de porta do Nodemailer estão funcionando corretamente.</p>",
+    });
+
+    console.log(`✅ Email de teste enviado: ${info.messageId}`);
+    res
+      .status(200)
+      .json({
+        message: "Email de teste enviado com sucesso!",
+        messageId: info.messageId,
+      });
+  } catch (error) {
+    console.error("❌ ERRO NO TESTE DE EMAIL:", error);
+    res.status(500).json({
+      message: "ERRO CRÍTICO: Falha na conexão ou autenticação SMTP.",
+      detalhes:
+        "Verifique 'EMAIL_USER' e 'EMAIL_PASS' (Senha de Aplicação) no seu .env. O erro técnico foi: " +
+        error.message,
+      erroTecnico: error.message,
+    });
+  }
+});
+
+// ==========================================================
 // Rota POST: /api/forgot-password (Passo 2)
+// ==========================================================
 router.post("/forgot-password", async (req, res) => {
   const { email } = req.body;
   let user;
@@ -54,19 +99,24 @@ router.post("/forgot-password", async (req, res) => {
   const expiresAt = new Date(Date.now() + 60000 * 15); // 15 minutos
 
   try {
-    // 1. Insere o token no Neon
+    // 1. LÓGICA DE SEGURANÇA: Deleta qualquer token existente para este usuário
+    await pool.query("DELETE FROM password_reset_tokens WHERE user_id = $1", [
+      userId,
+    ]);
+
+    // 2. Insere o novo token no Neon
     await pool.query(
       "INSERT INTO password_reset_tokens (user_id, token, expires_at) VALUES ($1, $2, $3)",
       [userId, token, expiresAt]
     );
 
-    // 2. Monta o link usando a variável do .env
+    // 3. Monta e envia o e-mail
+    // Garante que a URL base termine com barra
     const frontendUrlBase = process.env.FRONTEND_URL.endsWith("/")
       ? process.env.FRONTEND_URL
       : process.env.FRONTEND_URL + "/";
     const resetLink = `${frontendUrlBase}reset-password.html?token=${token}`;
 
-    // 3. ENVIAR EMAIL: (Usando o transporter)
     await transporter.sendMail({
       from: `"Lotofácil" <${process.env.EMAIL_USER}>`,
       to: email,
@@ -89,20 +139,23 @@ router.post("/forgot-password", async (req, res) => {
           "Se o e-mail estiver registrado, você receberá um link de redefinição.",
       });
   } catch (error) {
-    console.error("❌ ERRO GRAVE ao enviar e-mail:", error);
-    // Retorna um erro 500 para informar que a tentativa falhou.
+    console.error(
+      "❌ ERRO GRAVE ao processar forgot-password (Nodemailer):",
+      error.message
+    );
     return res.status(500).json({
       message:
-        "Erro no servidor ao enviar o email. Verifique as credenciais SMTP (Gmail).",
+        "Erro no servidor ao enviar o email. O token foi gerado, mas o envio falhou.",
       detalhes: error.message,
     });
   }
 });
 
+// ==========================================================
 // Rota POST: /api/reset-password (Passo 3)
+// ==========================================================
 router.post("/reset-password", async (req, res) => {
   const { token, newPassword } = req.body;
-  // ... (Lógica de validação de token, hash da senha e update no Neon)
 
   // 1. Valida o token e verifica se não expirou
   let tokenRecord;
@@ -117,7 +170,7 @@ router.post("/reset-password", async (req, res) => {
   }
 
   if (!tokenRecord) {
-    return res.status(400).json({ message: "Token inválido ou expirado." });
+    return res.status(400).json({ error: "Token inválido ou expirado." });
   }
 
   const userId = tokenRecord.user_id;
@@ -127,7 +180,7 @@ router.post("/reset-password", async (req, res) => {
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(newPassword, salt);
 
-    // 3. Atualiza a senha na tabela 'usuarios'
+    // 3. Atualiza a senha na tabela 'usuarios' (ATENÇÃO: Nome da coluna é 'senha_hash')
     await pool.query("UPDATE usuarios SET senha_hash = $1 WHERE id = $2", [
       hashedPassword,
       userId,
