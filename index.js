@@ -43,15 +43,6 @@ const pool = new Pool({
   },
 });
 
-// NOVO: Exportar a pool de conexão
-module.exports = { pool };
-
-// Importa o arquivo de rotas de autenticação
-const authRoutes = require("./routes/authRoutes");
-
-// Rotas de autenticação (Redefinição de senha)
-app.use("/api", authRoutes); // Todas as rotas em authRoutes.js começarão com /api
-
 // ===================================
 // === MIDDLEWARE DE AUTENTICAÇÃO
 // ===================================
@@ -80,6 +71,12 @@ function authMiddleware(req, res, next) {
 // ===================================
 // === ROTAS DE AUTENTICAÇÃO
 // ===================================
+
+// Importa o arquivo de rotas de autenticação
+const authRoutes = require("./routes/authRoutes");
+
+// Rotas de autenticação (Redefinição de senha)
+app.use("/api", authRoutes); // Todas as rotas em authRoutes.js começarão com /api
 
 // REGISTRO
 app.post("/api/register", async (req, res) => {
@@ -756,6 +753,8 @@ app.get("/api/test", (req, res) => {
     rotas_disponiveis: [
       "POST /api/register",
       "POST /api/login",
+      "POST /api/forgot-password", // ADICIONADO MANUALMENTE PARA FACILITAR
+      "POST /api/reset-password", // ADICIONADO MANUALMENTE PARA FACILITAR
       "GET /api/resultados",
       "POST /api/jogos/salvar",
       "POST /api/jogos/salvar-lote", // <- A rota que está dando erro
@@ -783,9 +782,16 @@ app.listen(port, () => {
   console.log(`🚀 API da Lotofácil rodando na porta ${port}`);
   console.log(`📍 URL: http://localhost:${port}`);
   console.log(`✅ Rotas disponíveis:`);
+  console.log(`   POST /api/register`);
+  console.log(`   POST /api/login`);
+  console.log(`   POST /api/forgot-password`);
+  console.log(`   POST /api/reset-password`);
   console.log(`   POST /api/jogos/salvar-lote`);
   console.log(`   GET  /api/jogos/meus-jogos`);
   console.log(`   POST /api/jogos/delete`);
   console.log(`   GET  /api/fechamentos/opcoes`); // <-- ADICIONE
   console.log(`   GET  /api/fechamento/:codigo`); // <-- ADICIONADO AO LOG
 });
+
+// NOVO: Exportar a pool de conexão
+module.exports = { pool };
