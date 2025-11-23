@@ -43,6 +43,15 @@ const pool = new Pool({
   },
 });
 
+// NOVO: Exportar a pool de conexão
+module.exports = { pool };
+
+// Importa o arquivo de rotas de autenticação
+const authRoutes = require("./routes/authRoutes");
+
+// Rotas de autenticação (Redefinição de senha)
+app.use("/api", authRoutes); // Todas as rotas em authRoutes.js começarão com /api
+
 // ===================================
 // === MIDDLEWARE DE AUTENTICAÇÃO
 // ===================================
