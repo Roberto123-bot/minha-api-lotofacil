@@ -81,8 +81,11 @@ router.post("/forgot-password", async (req, res) => {
     // Envia e-mail usando Resend
     console.log("📤 Tentando enviar e-mail via Resend...");
 
+    // IMPORTANTE: Use o e-mail verificado no Resend
+    const fromEmail = process.env.RESEND_FROM_EMAIL || "onboarding@resend.dev";
+
     const { data, error } = await resend.emails.send({
-      from: "Lotofácil <onboarding@resend.dev>", // Use seu domínio verificado ou o padrão
+      from: `Lotofácil <${fromEmail}>`,
       to: [email],
       subject: "🔐 Redefinição de Senha - Lotofácil",
       html: `
