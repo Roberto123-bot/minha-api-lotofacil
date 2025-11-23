@@ -34,14 +34,31 @@ if (!jwtSecret) {
   process.exit(1);
 }
 
-// --- AJUSTADO ---
-// Adicionado 'ssl' para compatibilidade com NeonDB / Vercel Postgres
+// Cria a pool de conexão
 const pool = new Pool({
   connectionString: connectionString,
   ssl: {
     rejectUnauthorized: false,
   },
 });
+
+// ✅ EXPORTA A POOL AQUI (ANTES DE IMPORTAR ROTAS)
+module.exports = { pool };
+
+// Testa a conexão
+pool.connect((err, client, release) => {
+  if (err) {
+    console.error("❌ Erro ao conectar ao banco de dados:", err.message);
+  } else {
+    console.log("✅ Conectado ao banco de dados PostgreSQL (Neon)");
+    release();
+  }
+});
+
+// ===================================
+// === IMPORTA ROTAS (DEPOIS DA EXPORTAÇÃO)
+// ===================================
+const authRoutes = require("./routes/authRoutes");
 
 // ===================================
 // === MIDDLEWARE DE AUTENTICAÇÃO
@@ -71,9 +88,6 @@ function authMiddleware(req, res, next) {
 // ===================================
 // === ROTAS DE AUTENTICAÇÃO
 // ===================================
-
-// Importa o arquivo de rotas de autenticação
-const authRoutes = require("./routes/authRoutes");
 
 // Rotas de autenticação (Redefinição de senha)
 app.use("/api", authRoutes); // Todas as rotas em authRoutes.js começarão com /api
@@ -281,7 +295,7 @@ app.get("/api/resultados", authMiddleware, async (req, res) => {
 // === ROTAS DE FECHAMENTOS
 // ===================================
 
-// LISTAR OPÇÕES DE FECHAMENTOS DISPONÍVEIS (NOVO)
+// LISTAR OPÇÕES DE FECHAMENTOS DISPONÍVEIS
 app.get("/api/fechamentos/opcoes", authMiddleware, async (req, res) => {
   console.log(
     `✅ Usuário ${req.usuario.email} buscando opções de fechamentos...`
@@ -314,7 +328,7 @@ app.get("/api/fechamentos/opcoes", authMiddleware, async (req, res) => {
   }
 });
 
-// BUSCAR FECHAMENTO ESPECÍFICO (JÁ EXISTE)
+// BUSCAR FECHAMENTO ESPECÍFICO
 app.get("/api/fechamento/:codigo", authMiddleware, async (req, res) => {
   const { codigo } = req.params;
   console.log(`✅ Usuário ${req.usuario.email} buscando fechamento: ${codigo}`);
@@ -366,9 +380,7 @@ app.post("/api/jogos/salvar", authMiddleware, async (req, res) => {
   }
 });
 
-// =======================================================
-// === SALVAR EM LOTE (BULK) - VERSÃO CORRIGIDA
-// =======================================================
+// SALVAR EM LOTE (BULK)
 app.post("/api/jogos/salvar-lote", authMiddleware, async (req, res) => {
   console.log("📥 POST /api/jogos/salvar-lote");
   console.log("Body recebido:", req.body);
@@ -485,7 +497,7 @@ app.post("/api/jogos/delete", authMiddleware, async (req, res) => {
         message: `${result.rowCount} jogo(s) deletado(s) com sucesso.`,
       });
     } else {
-      res.status(4404).json({
+      res.status(404).json({
         error: "Nenhum jogo encontrado para deletar.",
       });
     }
@@ -493,29 +505,6 @@ app.post("/api/jogos/delete", authMiddleware, async (req, res) => {
     console.error("Erro ao deletar jogos:", error.message);
     res.status(500).json({ error: "Erro interno ao deletar jogos." });
   }
-});
-
-// ===================================
-// === ROTAS FINAIS
-// ===================================
-
-// Worker de sincronização
-app.all("/api/worker/run", async (req, res) => {
-  console.log("📥 Worker /api/worker/run chamado...");
-  try {
-    const resultado = await syncLotofacil();
-    res.status(200).json(resultado);
-  } catch (error) {
-    res.status(500).json({
-      error: "Erro ao executar sincronização",
-      message: error.message,
-    });
-  }
-});
-
-// Rota raiz
-app.get("/", (req, res) => {
-  res.send("API da Lotofácil (PostgreSQL + Express) está no ar. ✅");
 });
 
 // ===================================
@@ -647,11 +636,7 @@ app.delete("/api/boloes/:id", authMiddleware, async (req, res) => {
   }
 });
 
-// ===================================
-// === ATUALIZAÇÃO: SALVAR JOGOS COM BOLÃO
-// ===================================
-
-// SALVAR EM LOTE COM BOLÃO (VERSÃO ATUALIZADA)
+// SALVAR EM LOTE COM BOLÃO
 app.post(
   "/api/jogos/salvar-lote-com-bolao",
   authMiddleware,
@@ -708,7 +693,7 @@ app.post(
   }
 );
 
-// BUSCAR JOGOS COM FILTRO DE BOLÃO (VERSÃO ATUALIZADA)
+// BUSCAR JOGOS COM FILTRO DE BOLÃO
 app.get("/api/jogos/meus-jogos-filtrado", authMiddleware, async (req, res) => {
   console.log("📥 GET /api/jogos/meus-jogos-filtrado");
 
@@ -745,7 +730,30 @@ app.get("/api/jogos/meus-jogos-filtrado", authMiddleware, async (req, res) => {
   }
 });
 
-// Rota de teste (útil para debug)
+// ===================================
+// === ROTAS FINAIS
+// ===================================
+
+// Worker de sincronização
+app.all("/api/worker/run", async (req, res) => {
+  console.log("📥 Worker /api/worker/run chamado...");
+  try {
+    const resultado = await syncLotofacil();
+    res.status(200).json(resultado);
+  } catch (error) {
+    res.status(500).json({
+      error: "Erro ao executar sincronização",
+      message: error.message,
+    });
+  }
+});
+
+// Rota raiz
+app.get("/", (req, res) => {
+  res.send("API da Lotofácil (PostgreSQL + Express) está no ar. ✅");
+});
+
+// Rota de teste
 app.get("/api/test", (req, res) => {
   res.json({
     status: "ok",
@@ -753,15 +761,17 @@ app.get("/api/test", (req, res) => {
     rotas_disponiveis: [
       "POST /api/register",
       "POST /api/login",
-      "POST /api/forgot-password", // ADICIONADO MANUALMENTE PARA FACILITAR
-      "POST /api/reset-password", // ADICIONADO MANUALMENTE PARA FACILITAR
+      "POST /api/forgot-password",
+      "POST /api/reset-password",
       "GET /api/resultados",
       "POST /api/jogos/salvar",
-      "POST /api/jogos/salvar-lote", // <- A rota que está dando erro
+      "POST /api/jogos/salvar-lote",
       "GET /api/jogos/meus-jogos",
       "POST /api/jogos/delete",
       "GET /api/fechamentos/opcoes",
-      "GET /api/fechamento/:codigo", // <-- NOVA ROTA AQUI
+      "GET /api/fechamento/:codigo",
+      "GET /api/boloes",
+      "POST /api/boloes",
     ],
   });
 });
@@ -786,12 +796,12 @@ app.listen(port, () => {
   console.log(`   POST /api/login`);
   console.log(`   POST /api/forgot-password`);
   console.log(`   POST /api/reset-password`);
+  console.log(`   GET  /api/resultados`);
   console.log(`   POST /api/jogos/salvar-lote`);
   console.log(`   GET  /api/jogos/meus-jogos`);
   console.log(`   POST /api/jogos/delete`);
-  console.log(`   GET  /api/fechamentos/opcoes`); // <-- ADICIONE
-  console.log(`   GET  /api/fechamento/:codigo`); // <-- ADICIONADO AO LOG
+  console.log(`   GET  /api/fechamentos/opcoes`);
+  console.log(`   GET  /api/fechamento/:codigo`);
+  console.log(`   GET  /api/boloes`);
+  console.log(`   POST /api/boloes`);
 });
-
-// NOVO: Exportar a pool de conexão
-module.exports = { pool };
