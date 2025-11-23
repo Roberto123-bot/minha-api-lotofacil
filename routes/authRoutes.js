@@ -81,12 +81,14 @@ router.post("/forgot-password", async (req, res) => {
     // Envia e-mail usando Resend
     console.log("📤 Tentando enviar e-mail via Resend...");
 
-    // IMPORTANTE: Use o e-mail verificado no Resend
+    // IMPORTANTE: Use onboarding@resend.dev para testes
+    // Depois de verificar seu domínio, troque por: noreply@seudominio.com
     const fromEmail = process.env.RESEND_FROM_EMAIL || "onboarding@resend.dev";
 
     const { data, error } = await resend.emails.send({
       from: `Lotofácil <${fromEmail}>`,
       to: [email],
+      reply_to: "robertosantosloteria@gmail.com", // E-mail de resposta
       subject: "🔐 Redefinição de Senha - Lotofácil",
       html: `
         <!DOCTYPE html>
@@ -231,9 +233,13 @@ router.post("/reset-password", async (req, res) => {
 
     // Envia e-mail de confirmação (opcional)
     try {
+      const fromEmail =
+        process.env.RESEND_FROM_EMAIL || "onboarding@resend.dev";
+
       await resend.emails.send({
-        from: "Lotofácil <onboarding@resend.dev>",
+        from: `Lotofácil <${fromEmail}>`,
         to: [reset.email],
+        reply_to: "robertosantosloteria@gmail.com",
         subject: "✅ Senha Redefinida com Sucesso",
         html: `
           <!DOCTYPE html>
