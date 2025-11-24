@@ -104,16 +104,16 @@ router.post("/forgot-password", async (req, res) => {
 
     await pool.query(
       `INSERT INTO password_reset_tokens (user_id, token, expires_at)
-VALUES ($1, $2, $3)
-ON CONFLICT (user_id) 
-DO UPDATE SET token = $2, expires_at = $3`,
+        VALUES ($1, $2, $3)
+        ON CONFLICT (user_id) 
+        DO UPDATE SET token = $2, expires_at = $3`,
       [user.id, token, expires_at]
     );
 
     console.log(`✅ Token gerado e salvo no banco`); // Link de redefinição
 
     const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3001";
-    const resetLink = `${frontendUrl}/reset-password?token=${token}`;
+    const resetLink = `${frontendUrl}/reset-password.html?token=${token}`;
 
     console.log(`🔗 Link de redefinição: ${resetLink}`); // 3. 🚨 Envio via Brevo API (HTTPS)
 
