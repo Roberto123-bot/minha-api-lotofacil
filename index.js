@@ -168,6 +168,13 @@ app.post("/api/login", async (req, res) => {
       return res.status(401).json({ error: "Email ou senha inválidos." });
     }
 
+    // 🚨 LOG DE SUCESSO DO LOGIN (Onde o problema parece estar)
+    console.log(
+      `✅ [DIAG] Login bem-sucedido. Gerando token para ID: ${user.id}`
+    );
+    // ---------------------------------
+
+    // ⚠️ O FLUXO CONTINUA DAQUI PARA O SUCESSO!
     const token = jwt.sign(
       { id: user.id, email: user.email, nome: user.nome },
       jwtSecret,
