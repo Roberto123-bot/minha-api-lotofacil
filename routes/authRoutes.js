@@ -2,8 +2,7 @@ const express = require("express");
 const router = express.Router();
 const crypto = require("crypto");
 const bcrypt = require("bcryptjs");
-// 🚨 MUDANÇA: Usaremos o Nodemailer para SMTP do Brevo
-const nodemailer = require("nodemailer");
+// NOTA: Removemos o Nodemailer/Resend pois usaremos a API HTTP
 require("dotenv").config();
 
 // Carrega a pool de conexão
@@ -18,32 +17,55 @@ try {
   }
 }
 
-// ===================================
-// === CONFIGURAÇÃO DO BREVO (SMTP)
-// ===================================
-// Cria o transporter Nodemailer com as credenciais do Brevo (lidas do .env)
-const transporter = nodemailer.createTransport({
-  host: process.env.EMAIL_HOST, // Ex: smtp-relay.brevo.com
-  port: parseInt(process.env.EMAIL_PORT), // Ex: 587
-  secure: false, // false para TLS na porta 587
-  auth: {
-    user: process.env.EMAIL_USER, // Login Brevo (Ex: 9c6c0001@smtp-brevo.com)
-    pass: process.env.EMAIL_PASS, // Chave API / Senha SMTP do Brevo
-  },
-  tls: {
-    // Opção recomendada para garantir a conexão TLS em hosts SMTP
-    rejectUnauthorized: false,
-  },
-});
+// Brevo API Host e Key (Lidos do .env)
+const BREVO_API_URL = "https://api.brevo.com/v3/smtp/email";
+const BREVO_API_KEY = process.env.EMAIL_PASS;
+const EMAIL_USER = process.env.EMAIL_USER;
 
-// Logs de configuração
-console.log("\n📧 ===== CONFIGURAÇÃO DE E-MAIL (SMTP) =====");
-console.log("  Serviço: Brevo (ex-Sendinblue) ✅");
-console.log("  Host:", process.env.EMAIL_HOST);
-console.log("  Porta:", process.env.EMAIL_PORT);
-console.log("  Login:", process.env.EMAIL_USER);
-console.log("  Frontend URL:", process.env.FRONTEND_URL || "NÃO CONFIGURADA");
-console.log("========================================\n");
+// ===================================
+// === FUNÇÃO AUXILIAR: ENVIAR EMAIL VIA API (HTTPS)
+// ===================================
+async function sendEmailBrevo(toEmail, subject, htmlContent) {
+  if (!BREVO_API_KEY) {
+    throw new Error("Brevo API Key (EMAIL_PASS) não configurada.");
+  }
+
+  // A chave API do Brevo é usada no header 'api-key'
+  const headers = {
+    Accept: "application/json",
+    "Content-Type": "application/json",
+    "api-key": BREVO_API_KEY,
+  };
+
+  // Objeto de dados para a API V3 do Brevo
+  const data = {
+    sender: { email: EMAIL_USER, name: "Lotofácil App" },
+    to: [{ email: toEmail }],
+    subject: subject,
+    htmlContent: htmlContent,
+  };
+
+  try {
+    const response = await fetch(BREVO_API_URL, {
+      method: "POST",
+      headers: headers,
+      body: JSON.stringify(data),
+    });
+
+    if (response.status >= 400) {
+      const errorData = await response.json().catch(() => ({}));
+      const apiMessage =
+        errorData.message || "Erro desconhecido na API do Brevo.";
+      console.error("❌ Falha na API Brevo:", apiMessage);
+      throw new Error(`Falha no Brevo API: ${apiMessage}`);
+    }
+
+    console.log(`✅ E-mail enviado com sucesso via Brevo API (HTTPS).`);
+    return true;
+  } catch (error) {
+    throw new Error(`Erro de rede/API: ${error.message}`);
+  }
+}
 
 // ===================================
 // === ROTA: SOLICITAR REDEFINIÇÃO
@@ -52,11 +74,11 @@ router.post("/forgot-password", async (req, res) => {
   console.log("📥 POST /api/forgot-password");
 
   try {
-    const { email } = req.body; // Validação de e-mail
+    const { email } = req.body;
 
     if (!email) {
       return res.status(400).json({ error: "E-mail é obrigatório." });
-    } // Verifica se o usuário existe
+    } // 1. Verifica se o usuário existe
 
     const userResult = await pool.query(
       "SELECT id, nome, email FROM usuarios WHERE email = $1",
@@ -64,7 +86,6 @@ router.post("/forgot-password", async (req, res) => {
     );
 
     if (userResult.rows.length === 0) {
-      // Por segurança, não revela se o e-mail existe ou não
       console.log(`⚠️ E-mail não encontrado no banco: ${email}`);
       return res.status(200).json({
         message:
@@ -72,11 +93,10 @@ router.post("/forgot-password", async (req, res) => {
       });
     }
 
-    const user = userResult.rows[0];
-    console.log(`✅ Usuário encontrado: ${user.nome} (${user.email})`); // Gera token único e seguro (32 bytes = 64 caracteres hex)
+    const user = userResult.rows[0]; // Gera token único e seguro (32 bytes = 64 caracteres hex)
 
     const token = crypto.randomBytes(32).toString("hex");
-    const expires_at = new Date(Date.now() + 3600000); // 1 hora // Salva token no banco (ON CONFLICT para garantir que só haja um token por usuário)
+    const expires_at = new Date(Date.now() + 3600000); // 1 hora // 2. Salva token no banco
 
     await pool.query(
       `INSERT INTO password_reset_tokens (user_id, token, expires_at)
@@ -91,89 +111,48 @@ router.post("/forgot-password", async (req, res) => {
     const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3001";
     const resetLink = `${frontendUrl}/reset-password?token=${token}`;
 
-    console.log(`🔗 Link de redefinição: ${resetLink}`); // Configuração do e-mail
+    console.log(`🔗 Link de redefinição: ${resetLink}`); // 3. 🚨 NOVO: Envio via Brevo API (HTTPS)
 
-    // Brevo exige que o email FROM seja um domínio/email verificado. Usamos o EMAIL_USER
-    const fromEmail = process.env.EMAIL_USER;
-    const destinatario = email; // Enviando para o email do usuário
-
-    console.log(
-      `📤 Tentando enviar e-mail via Brevo SMTP para: ${destinatario}`
-    );
-
-    const mailOptions = {
-      from: `Lotofácil <${fromEmail}>`,
-      to: destinatario,
-      // Reply-to pode ser seu email pessoal, se verificado
-      reply_to: process.env.VERIFIED_EMAIL || fromEmail,
-      subject: "🔐 Redefinição de Senha - Lotofácil",
-      html: `
-      <!DOCTYPE html>
-      <html lang="pt-BR">
-      <head>
-      <meta charset="UTF-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <style>
-      body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; background-color: #f4f4f4; }
-      .container { max-width: 600px; margin: 20px auto; background: white; border-radius: 10px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
-      .header { background: linear-gradient(135deg, #666eea 0%, #764ba2 100%); color: white; padding: 40px 20px; text-align: center; }
-      .content { padding: 40px 30px; }
-      .button-container { text-align: center; margin: 30px 0; }
-      .button { display: inline-block; padding: 15px 40px; background-color: #4CAF50; color: white !important; text-decoration: none; border-radius: 5px; font-weight: bold; font-size: 16px; }
-      </style>
-      </head>
-      <body>
-      <div class="container">
-      <div class="header"><h1>🎰 Lotofácil</h1></div>
-      <div class="content">
-      <p>Olá, <strong>${user.nome}</strong>!</p>
+    const emailHtml = `
+      <p>Olá, ${user.nome}!</p>
       <p>Você solicitou a redefinição de senha da sua conta.</p>
       <p>Clique no botão abaixo para criar uma nova senha:</p>
-
-      <div class="button-container">
-      <a href="${resetLink}" class="button">🔓 Redefinir Senha</a>
+      <div style="text-align:center; margin: 20px 0;">
+      <a href="${resetLink}" style="display: inline-block; padding: 10px 20px; background-color: #4CAF50; color: white; text-decoration: none; border-radius: 5px; font-weight: bold;">
+      🔓 Redefinir Senha
+      </a>
       </div>
-      </div>
-      </div>
-      </body>
-      </html>
-        `,
-    };
+      <p>Este link é válido por 1 hora.</p>
+      `;
 
-    await transporter.sendMail(mailOptions); // 🚨 Usa o Nodemailer
-
-    console.log(
-      `✅ E-mail enviado com sucesso via Brevo SMTP para: ${destinatario}`
+    await sendEmailBrevo(
+      email,
+      "🔐 Redefinição de Senha - Lotofácil",
+      emailHtml
     );
+    // ----------------------------------------------------
 
     res.status(200).json({
       message:
         "Se o e-mail estiver cadastrado, você receberá um link para redefinir a senha.",
     });
   } catch (error) {
-    console.error("❌ Erro ao processar forgot-password (Brevo):", error);
-    let errorMessage =
-      "Erro no envio de e-mail. Verifique as credenciais SMTP do Brevo.";
-    if (error.message?.includes("Invalid login") || error.code === "EAUTH") {
-      errorMessage =
-        "Erro de autenticação no Brevo. Verifique EMAIL_PASS (API Key).";
-    }
-
+    console.error("❌ Erro grave no forgot-password (API Brevo):", error);
     res.status(500).json({
-      error: errorMessage,
+      error: "Erro interno no servidor ao enviar o e-mail.",
       detalhes: error.message,
     });
   }
 });
 
 // ===================================
-// === ROTA: REDEFINIR SENHA
+// === ROTA: REDEFINIR SENHA (Mantida)
 // ===================================
 router.post("/reset-password", async (req, res) => {
   console.log("📥 POST /api/reset-password");
 
   try {
-    const { token, novaSenha } = req.body; // Validações
+    const { token, novaSenha } = req.body;
 
     if (!token || !novaSenha) {
       return res
@@ -220,19 +199,12 @@ router.post("/reset-password", async (req, res) => {
       reset.user_id,
     ]);
 
-    console.log(`✅ Senha redefinida com sucesso para: ${reset.email}`); // Envia e-mail de confirmação (opcional)
+    console.log(`✅ Senha redefinida com sucesso para: ${reset.email}`); // Envia e-mail de confirmação (via API Brevo, se possível)
 
     try {
-      const fromEmail = process.env.EMAIL_USER;
-      const mailOptions = {
-        from: `Lotofácil <${fromEmail}>`,
-        to: reset.email,
-        reply_to: process.env.EMAIL_USER,
-        subject: "✅ Senha Redefinida com Sucesso",
-        html: `<p>Olá, ${reset.nome}! Sua senha foi redefinida com sucesso.</p>`,
-      };
-      await transporter.sendMail(mailOptions);
-      console.log(`✅ E-mail de confirmação enviado para: ${reset.email}`);
+      const subject = "✅ Senha Redefinida com Sucesso";
+      const htmlContent = `<p>Olá, ${reset.nome}! Sua senha foi redefinida com sucesso.</p>`;
+      await sendEmailBrevo(reset.email, subject, htmlContent);
     } catch (emailError) {
       console.error(
         "⚠️ Erro ao enviar e-mail de confirmação:",
