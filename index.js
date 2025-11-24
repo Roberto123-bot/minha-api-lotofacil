@@ -151,7 +151,19 @@ app.post("/api/login", async (req, res) => {
 
     const user = userResult.rows[0];
 
+    // 🚨 LOGS DE DIAGNÓSTICO (Para ver a senha e o hash)
+    console.log(`\n🔑 [DIAG] Tentativa de Login para: ${email}`);
+    console.log(`   [DIAG] Senha Enviada: ${senha}`);
+    console.log(
+      `   [DIAG] Hash no BD: ${
+        user.senha_hash ? user.senha_hash.substring(0, 30) + "..." : "NULO"
+      }`
+    );
+    // ---------------------------------
+
     const senhaCorreta = await bcrypt.compare(senha, user.senha_hash);
+    console.log(`   [DIAG] Resultado bcrypt.compare: ${senhaCorreta}`); // Adiciona o resultado
+
     if (!senhaCorreta) {
       return res.status(401).json({ error: "Email ou senha inválidos." });
     }
