@@ -116,7 +116,7 @@ router.post("/forgot-password", async (req, res) => {
       <style>
       body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; background-color: #f4f4f4; }
       .container { max-width: 600px; margin: 20px auto; background: white; border-radius: 10px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
-      .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 40px 20px; text-align: center; }
+      .header { background: linear-gradient(135deg, #666eea 0%, #764ba2 100%); color: white; padding: 40px 20px; text-align: center; }
       .content { padding: 40px 30px; }
       .button-container { text-align: center; margin: 30px 0; }
       .button { display: inline-block; padding: 15px 40px; background-color: #4CAF50; color: white !important; text-decoration: none; border-radius: 5px; font-weight: bold; font-size: 16px; }
