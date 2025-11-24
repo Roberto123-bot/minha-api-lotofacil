@@ -2,7 +2,7 @@ const express = require("express");
 const router = express.Router();
 const crypto = require("crypto");
 const bcrypt = require("bcryptjs");
-// NOTA: Removemos o Nodemailer/Resend pois usaremos a API HTTP
+// NOTA: Usamos fetch/API, mas importamos Nodemailer se a lógica precisar dele em outro lugar.
 require("dotenv").config();
 
 // Carrega a pool de conexão
@@ -20,26 +20,28 @@ try {
 // Brevo API Host e Key (Lidos do .env)
 const BREVO_API_URL = "https://api.brevo.com/v3/smtp/email";
 const BREVO_API_KEY = process.env.EMAIL_PASS;
-const EMAIL_USER = process.env.EMAIL_USER;
+const VERIFIED_EMAIL = process.env.VERIFIED_EMAIL;
 
 // ===================================
 // === FUNÇÃO AUXILIAR: ENVIAR EMAIL VIA API (HTTPS)
 // ===================================
 async function sendEmailBrevo(toEmail, subject, htmlContent) {
-  if (!BREVO_API_KEY) {
-    throw new Error("Brevo API Key (EMAIL_PASS) não configurada.");
+  if (!BREVO_API_KEY || !VERIFIED_EMAIL) {
+    throw new Error(
+      "Brevo API Key ou E-mail Verificado (VERIFIED_EMAIL) não configurados."
+    );
   }
 
-  // A chave API do Brevo é usada no header 'api-key'
   const headers = {
     Accept: "application/json",
     "Content-Type": "application/json",
     "api-key": BREVO_API_KEY,
   };
 
-  // Objeto de dados para a API V3 do Brevo
+  // Dados para a API V3 do Brevo
   const data = {
-    sender: { email: EMAIL_USER, name: "Lotofácil App" },
+    // 🚨 USAMOS O EMAIL VERIFICADO DO .env AQUI
+    sender: { email: VERIFIED_EMAIL, name: "Lotofácil App" },
     to: [{ email: toEmail }],
     subject: subject,
     htmlContent: htmlContent,
@@ -60,7 +62,9 @@ async function sendEmailBrevo(toEmail, subject, htmlContent) {
       throw new Error(`Falha no Brevo API: ${apiMessage}`);
     }
 
-    console.log(`✅ E-mail enviado com sucesso via Brevo API (HTTPS).`);
+    console.log(
+      `✅ E-mail enviado com sucesso via Brevo API (HTTPS) para: ${toEmail}.`
+    );
     return true;
   } catch (error) {
     throw new Error(`Erro de rede/API: ${error.message}`);
@@ -100,9 +104,9 @@ router.post("/forgot-password", async (req, res) => {
 
     await pool.query(
       `INSERT INTO password_reset_tokens (user_id, token, expires_at)
-        VALUES ($1, $2, $3)
-        ON CONFLICT (user_id) 
-        DO UPDATE SET token = $2, expires_at = $3`,
+VALUES ($1, $2, $3)
+ON CONFLICT (user_id) 
+DO UPDATE SET token = $2, expires_at = $3`,
       [user.id, token, expires_at]
     );
 
@@ -111,14 +115,14 @@ router.post("/forgot-password", async (req, res) => {
     const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3001";
     const resetLink = `${frontendUrl}/reset-password?token=${token}`;
 
-    console.log(`🔗 Link de redefinição: ${resetLink}`); // 3. 🚨 NOVO: Envio via Brevo API (HTTPS)
+    console.log(`🔗 Link de redefinição: ${resetLink}`); // 3. 🚨 Envio via Brevo API (HTTPS)
 
     const emailHtml = `
       <p>Olá, ${user.nome}!</p>
       <p>Você solicitou a redefinição de senha da sua conta.</p>
       <p>Clique no botão abaixo para criar uma nova senha:</p>
       <div style="text-align:center; margin: 20px 0;">
-      <a href="${resetLink}" style="display: inline-block; padding: 10px 20px; background-color: #4CAF50; color: white; text-decoration: none; border-radius: 5px; font-weight: bold;">
+      <a href="${resetLink}" style="display: inline-block; padding: 15px 40px; background-color: #4CAF50; color: white; text-decoration: none; border-radius: 5px; font-weight: bold;">
       🔓 Redefinir Senha
       </a>
       </div>
@@ -146,7 +150,7 @@ router.post("/forgot-password", async (req, res) => {
 });
 
 // ===================================
-// === ROTA: REDEFINIR SENHA (Mantida)
+// === ROTA: REDEFINIR SENHA
 // ===================================
 router.post("/reset-password", async (req, res) => {
   console.log("📥 POST /api/reset-password");
@@ -199,7 +203,7 @@ router.post("/reset-password", async (req, res) => {
       reset.user_id,
     ]);
 
-    console.log(`✅ Senha redefinida com sucesso para: ${reset.email}`); // Envia e-mail de confirmação (via API Brevo, se possível)
+    console.log(`✅ Senha redefinida com sucesso para: ${reset.email}`); // Envia e-mail de confirmação (via API Brevo)
 
     try {
       const subject = "✅ Senha Redefinida com Sucesso";
